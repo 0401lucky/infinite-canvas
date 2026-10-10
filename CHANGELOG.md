@@ -15,7 +15,6 @@
 + [新增] 生图调用脚本新增 resolution 参数（1k / 2k / 4k / auto），Gemini 模板用它发送 imageConfig.imageSize。
 + [修复] Gemini 图片请求不再按模型名判断是否支持分辨率，选了 1K / 2K / 4K 就会发送 imageConfig.imageSize，nano-banana 2.1 等新模型也能按所选分辨率出图。
 + [优化] 新建节点菜单和连线创建菜单改为更紧凑的尺寸。
-
 + [修复] 本地存储统计在不支持 Storage API 的 HTTP 环境下改为降级读取 IndexedDB，不再因配额估算接口缺失报错。
 
 ## v0.19.0 - 2026-09-16
