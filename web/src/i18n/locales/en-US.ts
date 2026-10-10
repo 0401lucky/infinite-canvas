@@ -402,6 +402,7 @@ export default {
             contentEstimate: "Estimated from stored content",
             siteUsageHint: "Includes IndexedDB and other site data",
             quotaHint: "Allocated dynamically by the browser",
+            quotaUnavailable: "Quota estimation is unavailable in this browser",
             quotaProgress: "Site quota usage",
             mainDatabase: "Infinite Canvas data",
             records: "{{count}} records",
