@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { App, Empty, Input, Popconfirm, Select, Spin, Tag } from "antd";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Check, ChevronRight, Download, Eye, FileText, Image as ImageIcon, LayoutGrid, ListChecks, Music2, Plus, Rows3, Search, Settings2, Square, Trash2, Type, Video } from "lucide-react";
@@ -189,14 +189,21 @@ function CanvasNodesTab({ nodes, selectedNodeIds, onFocusNode, onPreviewNode, on
 
     // Let the hover preview fade out before the canvas starts moving to the node.
     const PRESS_FOCUS_DELAY = 180;
+    const focusTimerRef = useRef<number | null>(null);
+    useEffect(() => () => { if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current); }, []);
     const activateNode = (node: CanvasNodeData) => {
+        if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+        focusTimerRef.current = null;
         const hasPreview = (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video) && Boolean(node.metadata?.content);
         if (!hasPreview) {
             onFocusNode(node.id);
             return;
         }
         onHoverNode(null);
-        window.setTimeout(() => onFocusNode(node.id), PRESS_FOCUS_DELAY);
+        focusTimerRef.current = window.setTimeout(() => {
+            focusTimerRef.current = null;
+            onFocusNode(node.id);
+        }, PRESS_FOCUS_DELAY);
     };
 
     const handleExport = async () => {
