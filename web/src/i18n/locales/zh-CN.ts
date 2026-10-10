@@ -501,6 +501,8 @@ export default {
             defaultTextModel: "默认文本模型",
             defaultAudioModel: "默认音频模型",
             generation: "生成偏好",
+            imageResolution: "默认生图分辨率",
+            videoResolution: "默认视频分辨率",
             canvasImageCount: "画布默认生图张数",
             canvasImageCountDescription: "新建画布生图和配置节点默认使用，单个节点仍可单独覆盖。",
             regenerateBehavior: "已有内容的节点再次生成时",

@@ -501,6 +501,8 @@ export default {
             defaultTextModel: "Default text model",
             defaultAudioModel: "Default audio model",
             generation: "Generation preferences",
+            imageResolution: "Default image resolution",
+            videoResolution: "Default video resolution",
             canvasImageCount: "Default canvas image count",
             canvasImageCountDescription: "Used by new canvas image and configuration nodes. Individual nodes can override it.",
             regenerateBehavior: "When generating on a node that already has content",
