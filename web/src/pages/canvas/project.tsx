@@ -2442,7 +2442,7 @@ function InfiniteCanvasPage() {
                                             width: rootNode.width,
                                             height: rootNode.height,
                                             title: rootNode.title,
-                                            metadata: { ...node.metadata, ...rootNode.metadata, errorDetails: undefined },
+                                            metadata: { ...node.metadata, ...rootNode.metadata, content: undefined, storageKey: undefined, naturalWidth: undefined, naturalHeight: undefined, bytes: undefined, mimeType: undefined, errorDetails: undefined },
                                         }
                                       : isImageNode
                                         ? {
@@ -3143,9 +3143,10 @@ function InfiniteCanvasPage() {
             : null;
     const showHoverPreview = Boolean(hoverPreviewMedia);
     const retainedPreviewRef = useRef<{ video: boolean; src: string; title: string; width: number; height: number } | null>(null);
+    // Written during render on purpose: the overlay stays mounted while it fades out, so the last preview has to be
+    // retained after the hovered node clears. Sizing reuses the measured container size instead of reading layout here.
     if (hoverPreviewMedia) {
-        const bounds = containerRef.current?.getBoundingClientRect();
-        const previewSize = fitNodeSize(hoverPreviewMedia.width, hoverPreviewMedia.height, (bounds?.width || size.width) * 0.9, (bounds?.height || size.height) * 0.9);
+        const previewSize = fitNodeSize(hoverPreviewMedia.width, hoverPreviewMedia.height, size.width * 0.9, size.height * 0.9);
         retainedPreviewRef.current = { video: hoverPreviewMedia.video, src: hoverPreviewMedia.src, title: hoverPreviewNode?.title || "", width: previewSize.width, height: previewSize.height };
     }
     const retainedPreview = retainedPreviewRef.current;
