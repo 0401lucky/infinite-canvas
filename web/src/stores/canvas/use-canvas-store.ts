@@ -3,7 +3,10 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
-import { localForageStorage } from "@/lib/localforage-storage";
+import { serverStateStorage } from "@/lib/server-storage";
+import { canWriteServerStorage, serverSessionEpoch, serverSessionSignal } from "@/services/api/server";
+import { hydrateAssistantImages, hydrateCanvasImages } from "@/lib/canvas/canvas-generation-helpers";
+import { reportStorageError, useStorageStore } from "@/stores/use-storage-store";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
@@ -44,26 +47,55 @@ const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
 type PersistedCanvasState = Pick<CanvasStore, "projects" | "deletedProjects">;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
+let queuedValue: { name: string; value: StorageValue<CanvasStore> } | null = null;
+
+export function discardCanvasSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    queuedValue = null;
+    queuedPersistState = null;
+    useStorageStore.setState({ canvasQueued: false });
+}
+
+export function flushCanvasSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    const pending = queuedValue;
+    queuedValue = null;
+    const result = pending ? Promise.resolve(serverStateStorage.setItem(pending.name, JSON.stringify(pending.value))) : Promise.resolve();
+    useStorageStore.setState({ canvasQueued: false });
+    return result;
+}
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
-        const value = await localForageStorage.getItem(name);
+        const signal = serverSessionSignal();
+        const value = await serverStateStorage.getItem(name);
+        signal.throwIfAborted();
         if (!value) return null;
         const parsed = JSON.parse(value) as StorageValue<CanvasStore>;
+        parsed.state.projects = await Promise.all(parsed.state.projects.map(async (project) => ({
+            ...project,
+            nodes: await hydrateCanvasImages(project.nodes),
+            chatSessions: await hydrateAssistantImages(project.chatSessions),
+        })));
+        signal.throwIfAborted();
         queuedPersistState = parsed.state as PersistedCanvasState;
         return parsed;
     },
     setItem: (name, value) => {
+        if (!canWriteServerStorage()) return;
         const nextState = value.state as PersistedCanvasState;
         if (queuedPersistState && queuedPersistState.projects === nextState.projects && queuedPersistState.deletedProjects === nextState.deletedProjects) return;
         queuedPersistState = nextState;
+        queuedValue = { name, value };
+        useStorageStore.setState({ canvasQueued: true });
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
-            saveTimer = null;
-            void localForageStorage.setItem(name, JSON.stringify(value));
+            void flushCanvasSave().catch(reportStorageError);
         }, 400);
     },
-    removeItem: (name) => localForageStorage.removeItem(name),
+    removeItem: (name) => serverStateStorage.removeItem(name),
 };
 
 export const useCanvasStore = create<CanvasStore>()(
@@ -133,13 +165,17 @@ export const useCanvasStore = create<CanvasStore>()(
         {
             name: CANVAS_STORE_KEY,
             storage: canvasStorage,
+            skipHydration: true,
             partialize: (state) =>
                 ({
                     projects: state.projects,
                     deletedProjects: state.deletedProjects,
                 }) as StorageValue<CanvasStore>["state"],
-            onRehydrateStorage: () => () => {
-                useCanvasStore.setState({ hydrated: true });
+            onRehydrateStorage: () => {
+                const epoch = serverSessionEpoch();
+                return (_state, error) => {
+                    if (epoch === serverSessionEpoch()) useCanvasStore.setState({ hydrated: !error });
+                };
             },
         },
     ),

@@ -1,4 +1,5 @@
-import localforage from "localforage";
+import { createServerRecordStorage } from "@/lib/server-storage";
+import { ServerApiError, serverSessionSignal } from "@/services/api/server";
 
 import { runPromptSource, type RawPrompt } from "./prompt-source-runtime";
 import { usePromptSourceStore } from "@/stores/use-prompt-source-store";
@@ -46,8 +47,12 @@ type SourceCache = PromptSourceStatus & {
 };
 
 const cacheTtlMs = 1000 * 60 * 60;
-const promptCacheStore = localforage.createInstance({ name: "infinite-canvas", storeName: "prompt_cache" });
+const promptCacheStore = createServerRecordStorage("prompt_cache");
 const loadingSources = new Map<string, Promise<PromptSourceRefreshResult>>();
+
+export function resetPromptRefreshes() {
+    loadingSources.clear();
+}
 
 function enabledSources() {
     return usePromptSourceStore.getState().sources.filter((source) => source.enabled);
@@ -80,14 +85,19 @@ async function readSourceCache(sourceId: string) {
 }
 
 async function refreshSourceRecord(source: PromptSource): Promise<PromptSourceRefreshResult> {
+    const signal = serverSessionSignal();
     const previous = await readSourceCache(source.id);
+    signal.throwIfAborted();
     try {
-        const items = withSourceMeta(source, await runPromptSource(source));
+        const items = withSourceMeta(source, await runPromptSource(source, { signal }));
+        signal.throwIfAborted();
         const lastSuccessAt = new Date().toISOString();
         const cache: SourceCache = { sourceId: source.id, items, count: items.length, fetchedAt: Date.now(), lastSuccessAt, lastError: "", signature: sourceSignature(source) };
         await promptCacheStore.setItem(cacheKey(source.id), cache);
         return { sourceId: source.id, sourceName: source.name, count: items.length, lastSuccessAt, lastError: "", success: true };
     } catch (error) {
+        signal.throwIfAborted();
+        if (error instanceof ServerApiError || (error instanceof DOMException && error.name === "AbortError")) throw error;
         const lastError = error instanceof Error ? error.message : String(error);
         const cache: SourceCache = {
             sourceId: source.id,
@@ -106,33 +116,42 @@ async function refreshSourceRecord(source: PromptSource): Promise<PromptSourceRe
 function getOrStartRefresh(source: PromptSource) {
     const current = loadingSources.get(source.id);
     if (current) return current;
-    const loading = refreshSourceRecord(source).finally(() => loadingSources.delete(source.id));
+    const loading = refreshSourceRecord(source).finally(() => {
+        if (loadingSources.get(source.id) === loading) loadingSources.delete(source.id);
+    });
     loadingSources.set(source.id, loading);
     return loading;
 }
 
 async function getSourcePrompts(source: PromptSource): Promise<Prompt[]> {
+    const signal = serverSessionSignal();
     const cached = await readSourceCache(source.id);
+    signal.throwIfAborted();
     if (cached) {
         const stale = cached.signature !== sourceSignature(source) || Date.now() - cached.fetchedAt >= cacheTtlMs;
         if (stale) void getOrStartRefresh(source).catch(() => undefined);
         return withSourceMeta(source, cached.items);
     }
     const result = await getOrStartRefresh(source);
+    signal.throwIfAborted();
     if (!result.success) throw new Error(result.lastError);
     return (await readSourceCache(source.id))?.items || [];
 }
 
 async function getAllPrompts(): Promise<Prompt[]> {
+    const signal = serverSessionSignal();
     const settled = await Promise.all(
         enabledSources().map(async (source) => {
             try {
                 return await getSourcePrompts(source);
-            } catch {
+            } catch (error) {
+                signal.throwIfAborted();
+                if (error instanceof ServerApiError || (error instanceof DOMException && error.name === "AbortError")) throw error;
                 return [];
             }
         }),
     );
+    signal.throwIfAborted();
     return settled.flat();
 }
 
@@ -173,6 +192,7 @@ export async function refreshAllSources(): Promise<PromptSourceRefreshSummary> {
 }
 
 export async function refreshDueSources(maxAgeMs: number): Promise<PromptSourceRefreshSummary> {
+    const signal = serverSessionSignal();
     const sources = await Promise.all(
         enabledSources().map(async (source) => {
             const cached = await readSourceCache(source.id);
@@ -180,7 +200,9 @@ export async function refreshDueSources(maxAgeMs: number): Promise<PromptSourceR
             return !lastSuccess || Boolean(cached?.lastError) || Date.now() - lastSuccess >= maxAgeMs || cached?.signature !== sourceSignature(source) ? source : null;
         }),
     );
+    signal.throwIfAborted();
     const results = await Promise.all(sources.filter((source): source is PromptSource => Boolean(source)).map(getOrStartRefresh));
+    signal.throwIfAborted();
     return summarizeRefresh(results);
 }
 

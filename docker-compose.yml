@@ -5,7 +5,18 @@ services:
     ports:
       - "3000:3000"
     restart: unless-stopped
-    # 统计分析（可选，默认关闭）。每家一个独立变量，填了谁就启用谁，可同时启用多家：
-    # environment:
-    #   ANALYTICS_GA4_ID: G-XXXXXXXXXX                    # Google Analytics 4 衡量 ID
-    #   ANALYTICS_BAIDU_ID: xxxxxxxxxxxxxxxxxxxxxxxxxxxx   # 百度统计站点 ID
+    environment:
+      PORT: "3000"
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      DATA_DIR: /app/data
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-7}
+      MAX_UPLOAD_MIB: ${MAX_UPLOAD_MIB:-512}
+      MAX_JSON_MIB: ${MAX_JSON_MIB:-32}
+      ANALYTICS_GA4_ID: ${ANALYTICS_GA4_ID:-}
+      ANALYTICS_BAIDU_ID: ${ANALYTICS_BAIDU_ID:-}
+    volumes:
+      - app-data:/app/data
+volumes:
+  app-data:

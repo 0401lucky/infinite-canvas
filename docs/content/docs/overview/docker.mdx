@@ -5,11 +5,19 @@ description: Deploy Infinite Canvas with Docker Compose
 
 # Docker Deployment
 
+The main image now runs a Node.js 24 application service that serves both authenticated APIs and the Vite frontend. This Unreleased deployment flow still needs manual verification; build locally when evaluating it rather than assuming `latest` already contains the changes.
+
+## Configure first
+
+Copy `.env.example` to `.env` and set a strong `ADMIN_PASSWORD`. For a remote deployment, set `APP_ORIGIN` to the exact HTTPS origin used by the browser. Credentials must not go into public `config.js` or a static-assets directory.
+
 ## Use the published image
 
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
 cd infinite-canvas
+cp .env.example .env
+# Set ADMIN_PASSWORD and APP_ORIGIN before starting.
 docker compose up -d
 ```
 
@@ -37,7 +45,23 @@ cd docs
 docker compose -f docker-compose.local.yml up -d --build
 ```
 
-The main application container only runs Next.js. Canvases, My Assets, generation history, and API keys are stored in the browser by default, while prompt repositories are fetched directly by the frontend. No persistent data volume is required for this data.
+## Persistent data and updates
+
+Compose mounts the project-scoped `app-data` volume at `/app/data`. It contains `app.sqlite`, its WAL/SHM files, image originals, previews, other media, and temporary uploads. Do not remove the volume when recreating containers; do not use `docker compose down -v` or prune it as an update step. Stop the application before making a filesystem backup of the complete volume.
+
+Both Compose files use the same volume within the same Compose project. Changing the project name selects a different volume. If you switch to a host-directory mount, its files must be writable by the runtime's `node` user (UID 1000); never place that directory under public static assets.
+
+The application requires Node.js, SQLite, and private media storage, not a static-only deployment. AI provider, prompt-source, and WebDAV requests remain browser-owned. Local Canvas Agent storage remains separate and is not touched by image cleanup. Old browser data is not automatically migrated.
+
+| Setting | Default / behavior |
+| --- | --- |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | Username defaults to `admin`; password is required on first start. Explicit username/password changes revoke existing sessions. |
+| `APP_ORIGIN` | `http://localhost:3000`; must match the public origin. HTTPS enables Secure session cookies. |
+| `SESSION_TTL_DAYS` | 7 days from login, without sliding renewal. |
+| `MAX_UPLOAD_MIB` | 512 MiB per file; oversized uploads return 413 without incomplete files. |
+| `MAX_JSON_MIB` | 32 MiB per JSON write; oversized requests do not truncate or overwrite stored records. |
+
+There is no login IP rate limiting, account locking, or registration. Use a strong password and HTTPS. Signed-in browsers still receive AI API keys; protect the database, environment file, and backups as secrets. Docker restart/update durability, permissions, SPA routes, plugins, and media Range responses remain acceptance items rather than verified production guarantees.
 
 ## Optional analytics
 
@@ -48,15 +72,9 @@ No analytics are enabled by default. A deployment can enable GA4, Baidu Analytic
 | `ANALYTICS_GA4_ID` | Google Analytics 4 measurement ID (`G-XXXX`) |
 | `ANALYTICS_BAIDU_ID` | Baidu site ID, the hash after `hm.js?` |
 
-```yaml
-services:
-  app:
-    image: ghcr.io/basketikun/infinite-canvas:latest
-    ports:
-      - "3000:3000"
-    environment:
-      ANALYTICS_GA4_ID: G-XXXXXXXXXX
-      ANALYTICS_BAIDU_ID: e8263761cc5c32f5f7a855b8203b965a
+```dotenv
+ANALYTICS_GA4_ID=G-XXXXXXXXXX
+ANALYTICS_BAIDU_ID=your-site-id
 ```
 
 SPA route changes automatically report page views to enabled providers. Only configure analytics IDs on sites you control, and do not commit them to the repository.

@@ -1,9 +1,11 @@
 import { useMemo } from "react";
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
+import { serverStateStorage } from "@/lib/server-storage";
+import { serverSessionEpoch } from "@/services/api/server";
 
 export type ApiCallFormat = "openai" | "gemini";
 export type ModelCapability = "image" | "video" | "text" | "audio";
@@ -65,7 +67,7 @@ export type WebdavSyncConfig = {
     directory: string;
     lastSyncedAt: string;
 };
-export type ConfigTabKey = "channels" | "local-proxy" | "preferences" | "prompt-sources" | "webdav" | "local-storage";
+export type ConfigTabKey = "channels" | "local-proxy" | "preferences" | "prompt-sources" | "webdav" | "server-storage";
 
 export type ChannelCredentialsImportResult = {
     status: "created" | "updated" | "missing-base-url" | "invalid-base-url";
@@ -136,6 +138,7 @@ export const defaultWebdavSyncConfig: WebdavSyncConfig = {
 };
 
 type ConfigStore = {
+    hydrated: boolean;
     config: AiConfig;
     webdav: WebdavSyncConfig;
     isConfigOpen: boolean;
@@ -215,6 +218,7 @@ function isAiConfigReady(config: AiConfig, model: string) {
 export const useConfigStore = create<ConfigStore>()(
     persist(
         (set, get) => ({
+            hydrated: false,
             config: defaultConfig,
             webdav: defaultWebdavSyncConfig,
             isConfigOpen: false,
@@ -247,6 +251,12 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
+            storage: createJSONStorage(() => serverStateStorage),
+            skipHydration: true,
+            onRehydrateStorage: () => {
+                const epoch = serverSessionEpoch();
+                return (_state, error) => { if (epoch === serverSessionEpoch()) useConfigStore.setState({ hydrated: !error }); };
+            },
             partialize: (state) => ({ config: state.config, webdav: state.webdav }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;

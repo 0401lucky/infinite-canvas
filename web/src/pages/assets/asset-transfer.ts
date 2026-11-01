@@ -1,8 +1,10 @@
 import { saveAs } from "file-saver";
 
+import i18n from "@/i18n";
 import { createZip, readZip } from "@/lib/zip";
-import { getMediaBlob, setMediaBlob } from "@/services/file-storage";
-import { getImageBlob, setImageBlob } from "@/services/image-storage";
+import { collectClearedImageKeys, collectMediaStorageKeys, getMediaBlob, restoreMediaFiles, serializeMediaExport } from "@/services/file-storage";
+import { getImageBlob } from "@/services/image-storage";
+import { imageWasCleared, serverSessionSignal } from "@/services/api/server";
 import type { Asset } from "@/stores/use-asset-store";
 
 type AssetExportFile = {
@@ -21,41 +23,41 @@ type AssetExportItem = {
 };
 
 export async function exportAssets(assets: Asset[], filename: string) {
+    const signal = serverSessionSignal();
+    const cleared = collectClearedImageKeys(assets);
     const files: AssetExportItem[] = [];
     const zipFiles: { name: string; data: BlobPart }[] = [];
 
     await Promise.all(
-        assets.map(async (asset) => {
-            if (asset.kind !== "image" && asset.kind !== "video") return;
-            const storageKey = asset.data.storageKey;
-            if (!storageKey) return;
-            const blob = asset.kind === "image" ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
-            if (!blob) return;
-            const path = `files/${safeFileName(storageKey)}.${fileExtension(blob.type, asset.kind)}`;
-            files.push({ storageKey, path, mimeType: blob.type || asset.data.mimeType, bytes: blob.size });
+        [...collectMediaStorageKeys(assets)].map(async (storageKey) => {
+            if (cleared.has(storageKey)) return;
+            const blob = storageKey.startsWith("image:") ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
+            if (!blob) {
+                if (imageWasCleared(storageKey)) return;
+                throw new Error(i18n.t("server.mediaReadFailed"));
+            }
+            const path = `files/${safeFileName(storageKey)}.${fileExtension(blob.type, storageKey.startsWith("image:") ? "image" : "video")}`;
+            files.push({ storageKey, path, mimeType: blob.type, bytes: blob.size });
             zipFiles.push({ name: path, data: blob });
         }),
     );
 
-    const data: AssetExportFile = { app: "infinite-canvas", version: 1, exportedAt: new Date().toISOString(), assets, files };
+    signal.throwIfAborted();
+    const data: AssetExportFile = { app: "infinite-canvas", version: 1, exportedAt: new Date().toISOString(), assets: serializeMediaExport(assets), files };
     const zip = await createZip([{ name: "assets.json", data: JSON.stringify(data, null, 2) }, ...zipFiles]);
+    signal.throwIfAborted();
     saveAs(zip, filename);
 }
 
 export async function readAssetPackage(file: File) {
+    const signal = serverSessionSignal();
     const zip = await readZip(file);
     const assetFile = zip.get("assets.json");
     if (!assetFile) throw new Error("missing assets.json");
     const data = JSON.parse(await assetFile.text()) as AssetExportFile;
-    await Promise.all(
-        data.files.map(async (item) => {
-            const blob = zip.get(item.path);
-            if (!blob) return;
-            const typedBlob = blob.type ? blob : blob.slice(0, blob.size, item.mimeType);
-            await (item.storageKey.startsWith("image:") ? setImageBlob(item.storageKey, typedBlob) : setMediaBlob(item.storageKey, typedBlob));
-        }),
-    );
-    return data.assets;
+    signal.throwIfAborted();
+    if (data.app !== "infinite-canvas" || data.version !== 1 || !Array.isArray(data.assets)) throw new Error("invalid asset package");
+    return restoreMediaFiles(data.assets, data.files, zip);
 }
 
 function safeFileName(value: string) {

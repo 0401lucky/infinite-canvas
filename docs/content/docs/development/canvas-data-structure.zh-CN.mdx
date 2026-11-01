@@ -1,22 +1,27 @@
 ---
 title: 画布数据结构
-description: 画布本地存储、节点结构、媒体文件与清理机制
+description: 服务端记录、画布节点、媒体原文件与图片清理机制
 ---
 
 # 画布数据结构
 
-本文档说明当前画布在前端本地保存的数据结构、图片文件的存储和清理方式。
+本文档说明个人版已实施的数据结构和存储流程；认证、持久化、清理与部署效果仍需按[待测试事项](/zh-CN/docs/progress/pending-test)验收。
 
 ## 当前存储位置
 
-当前画布项目主要保存在浏览器本地：
+配置和业务数据由 `server/` 提供的认证同源 API 保存，不再持久化到浏览器业务数据库：
 
-- 画布项目 JSON：`localForage`，数据库名 `infinite-canvas`，storeName `app_state`，key 为 `infinite-canvas:canvas_store`。
-- 我的素材 JSON：`localForage`，数据库名 `infinite-canvas`，storeName `app_state`，key 为 `infinite-canvas:asset_store`。
-- 图片 Blob：单独存到 `localForage` 实例，数据库名 `infinite-canvas`，storeName `image_files`。
-- 视频等媒体 Blob：单独存到 `localForage` 实例，数据库名 `infinite-canvas`，storeName `media_files`。
+| 数据 | 存储所有者 |
+| --- | --- |
+| 配置、API Key、画布项目、素材、提示词来源、插件清单 | SQLite `records` 表的 `app_state` 命名空间 |
+| 图片/视频工作台记录、提示词缓存 | SQLite 的 `image_generation_logs`、`video_generation_logs`、`prompt_cache` 命名空间 |
+| 插件私有 JSON | SQLite 的 `plugin:<pluginId>` 命名空间 |
+| 图片原文件、预览、视频、音频和其他媒体 | 私有文件目录与 SQLite `media` 元数据 |
+| 管理员与会话 | SQLite `admin`、`sessions` 表 |
 
-画布 JSON 不直接长期保存大体积 base64 图片或视频。图片节点、视频节点、助手图片和素材媒体只保存展示 URL、`storageKey` 和元信息，真实 Blob 通过 `storageKey` 读取。
+画布和素材的记录 key 仍为 `infinite-canvas:canvas_store`、`infinite-canvas:asset_store`。完整数据目录包含 `app.sqlite` 及 SQLite 关联文件、`media/images/`、`media/files/`、`previews/` 和临时 `uploads/`，必须放在 `web/` 之外，不能作为静态目录公开。
+
+业务 store 在会话确认后手动补水，加载失败不能当作空数据成功，保存失败不能回退 IndexedDB/localStorage。浏览器仅保留主题、语言等极小的本机偏好；不自动迁移或删除旧浏览器数据库。本地 Canvas Agent 的消息历史和独立存储版本规则保持不变。
 
 ## 画布项目结构
 
@@ -33,6 +38,7 @@ type CanvasProject = {
   chatSessions: CanvasAssistantSession[];
   activeChatId: string | null;
   backgroundMode: "lines" | "dots" | "blank";
+  showImageInfo: boolean;
   viewport: { x: number; y: number; k: number };
 };
 ```
@@ -47,7 +53,10 @@ type CanvasProject = {
 - `chatSessions`：右侧画布助手会话。
 - `activeChatId`：当前选中的助手会话 ID。
 - `backgroundMode`：画布背景模式。
+- `showImageInfo`：图片信息的显示设置。
 - `viewport`：视口变换，`x/y` 是屏幕平移，`k` 是缩放比例。
+
+画布 store 还保存 `deletedProjects`，供既有 WebDAV 画布删除同步使用；它与媒体清理 tombstone 是不同状态。
 
 ## 节点结构
 
@@ -56,7 +65,7 @@ type CanvasProject = {
 ```ts
 type CanvasNodeData = {
   id: string;
-  type: "image" | "text" | "config" | "video";
+  type: CanvasNodeTypeId;
   title: string;
   position: { x: number; y: number };
   width: number;
@@ -68,7 +77,7 @@ type CanvasNodeData = {
 通用字段：
 
 - `id`：节点 ID。
-- `type`：节点类型，当前有图片、文本、生成配置、视频四类。
+- `type`：节点类型，内置图片、文本、生成配置、视频、音频、组六类，也允许 `pluginId:name` 这样的扩展 ID。
 - `title`：节点标题。
 - `position`：画布世界坐标，不是屏幕坐标。
 - `width` / `height`：画布世界坐标下的节点尺寸。
@@ -82,7 +91,8 @@ type CanvasNodeImage = {
   status: "idle" | "success" | "loading" | "error";
   errorDetails?: string;
   content: string;
-  storageKey: string;
+  storageKey?: string;
+  cleared?: boolean;
   naturalWidth: number;
   naturalHeight: number;
   bytes: number;
@@ -95,7 +105,7 @@ type CanvasNodeMetadata = {
   status?: "idle" | "success" | "loading" | "error";
   errorDetails?: string;
   fontSize?: number;
-  generationMode?: "text" | "image" | "video";
+  generationMode?: "text" | "image" | "video" | "audio";
   model?: string;
   size?: string;
   count?: number;
@@ -106,19 +116,23 @@ type CanvasNodeMetadata = {
   primaryImageId?: string;
   inputOrder?: string[];
   storageKey?: string;
+  cleared?: boolean;
   mimeType?: string;
   bytes?: number;
   videoTaskId?: string;
+  videoTaskProvider?: "openai" | "gemini";
 };
 ```
 
 不同节点的使用方式：
 
-- 图片节点：`content` 是当前可展示的图片 URL，成功保存本地时通常是 `blob:` URL，因 CORS 无法读取但仍可显示时也可能保留远程 URL；`storageKey` 仅在图片已经写入本地 Blob 时存在；`naturalWidth/naturalHeight/bytes/mimeType` 保存原图信息。
-- 视频节点：`content` 是当前可播放的视频 URL，通常是 `blob:` URL；`storageKey` 指向本地视频 Blob；`bytes/mimeType` 保存文件信息；OpenAI 风格异步生成会把远端 `videoTaskId` 一起写入节点，刷新后可继续按任务 ID 查询状态。
+- 图片节点：`content` 是运行时展示 URL，长期身份是服务端 `storageKey`；`naturalWidth/naturalHeight/bytes/mimeType` 保存原图信息，已清理时保留键并标记 `cleared`。
+- 视频、音频节点：`content` 是运行时播放 URL，`storageKey` 指向服务端原文件；视频异步任务保存远端任务 ID 与提供商，供刷新后继续查询。
 - 文本节点：`content` 保存文本内容；`fontSize` 保存字体大小；`prompt/status/errorDetails` 保存生成状态。
-- 生成配置节点：`generationMode/model/size/count/inputOrder` 保存生成配置；`generationMode` 可选择文本、图片或视频；上游输入通过 `connections` 计算。
+- 生成配置节点：`generationMode/model/size/count/inputOrder` 等字段保存生成配置；上游输入通过 `connections` 计算。
 - 多图图片节点：批量生成仍只保存为一个图片节点，请求开始前会在 `images` 中创建全部图片槽位，每个槽位通过 `status/errorDetails` 独立记录实时状态，成功后补充图片数据；最先成功的槽位会立即写入 `primaryImageId`，并由节点级 `content` 和图片元数据展示；展开状态仅属于当前界面，不写入项目数据。
+
+这里展示的是常用字段，完整类型以 `web/src/types/canvas.ts` 为准。持久化入口会移除带存储键的临时 `blob:` URL，因此记录中的 `content` 可以为空；不能因为 URL 为空就跳过有效 `storageKey` 的恢复。
 
 ## 连线结构
 
@@ -150,41 +164,28 @@ type CanvasAssistantSession = {
 };
 ```
 
-消息结构：
-
-```ts
-type CanvasAssistantMessage = {
-  id: string;
-  role: "user" | "assistant";
-  mode: "ask" | "image";
-  text: string;
-  isLoading?: boolean;
-  references?: CanvasAssistantReference[];
-  images?: CanvasAssistantImage[];
-};
-```
-
 图片引用和助手生成图片也遵循同一套图片存储规则：
 
-- `dataUrl` 字段当前可能是 `blob:` URL，也可能是旧数据中的 `data:image/...`。
-- `storageKey` 存在时，以 `storageKey` 为准读取图片 Blob。
-- 发送到 AI 接口前，如果接口需要 base64，会通过 `imageToDataUrl` 临时把 Blob URL 转成 data URL。
+- `dataUrl` 仅供运行时展示，不是持久化文件身份。
+- `storageKey` 存在时，以该键读取认证后的原文件，不回退旧 URL。
+- 发送到浏览器直连的 AI 接口前，如果需要 base64，通过 `imageToDataUrl` 临时转换原文件。
+
+这指画布内助手的项目数据，不把本机 Agent 的 thread/turn/item 消息历史并入应用数据库。
 
 ## 图片写入流程
 
 所有新增图片应通过 `uploadImage(input)` 写入：
 
-1. 传入 `Blob` 或 data URL。
-2. 内部转成 `Blob`。
-3. 生成 `storageKey`，格式为 `image:<id>`。
-4. 把 Blob 写入 `image_files`。
-5. 创建 `blob:` URL，并缓存在内存 `objectUrls`。
-6. 读取图片宽高，返回：
+1. 传入 `Blob`、data URL 或远程 URL，读取真实原文件。
+2. 验证 Blob 可解码为图片，读取原始宽高。
+3. 生成 `image:<id>` 新键，经同源 `/api/media` 上传并保存元数据。
+4. 原文件保存成功后，缓存当前会话的 Blob 与 `blob:` URL，返回 URL、键及原图信息。
+5. 沿用浏览器预览队列的 768px 最长边 / WebP 0.86 策略，预览单独保存在服务端。
 
 ```ts
 type UploadedImage = {
   url: string;
-  storageKey: string;
+  storageKey?: string;
   width: number;
   height: number;
   bytes: number;
@@ -206,29 +207,32 @@ type UploadedImage = {
 }
 ```
 
-因此，已保存图片的 `content` 只适合当前浏览器会话展示，长期标识是 `storageKey`。如果跨域限制导致图片无法读取，节点会保留可能过期的远程 `content`，并且没有 `storageKey`，不能视为已经完成本地持久化。
+图片能通过远程 URL 显示，不代表原文件已经保存。下载、解码或服务端保存失败会报错，不伪造存储键或保存成功；跨域原文件下载可以使用既有本地代理，但应用 `/api` 和私有原文件接口不能经过 AI 代理。
 
-## 图片读取和旧数据迁移
+## 媒体读取与缓存
 
-打开画布时会执行图片补水：
+打开画布或素材列表时按服务端键补水：
 
-- 如果图片节点有 `storageKey`，通过 `resolveImageUrl(storageKey, fallback)` 读取 Blob 并生成新的 `blob:` URL。
-- 如果图片节点没有 `storageKey`，但 `content` 是旧的 `data:image/...`，会调用 `uploadImage(content)` 迁移到 `image_files`，并补上 `storageKey`。
-- 助手消息里的引用图和生成图也会执行同类逻辑。
+- 即使 `content`/`dataUrl` 为空，也通过 `resolveImageUrl` 或 `resolveMediaUrl` 恢复有效存储键，对应认证后的 `/api/media/.../original`。
+- 原图下载、编辑、生成参考、ZIP 和 WebDAV 通过 `getImageBlob`/`getMediaBlob` 读取原文件，不能拿缩略图替代；下载反馈复用 `use-download-media.ts`。
+- 缺失或已清理键返回不可用状态，不回退旧 blob URL、远程 URL 或备用封面。
+- 预览不写入画布/素材/历史 JSON，也不进入 ZIP 和 WebDAV 备份。
+- 退出、会话过期或重新加载数据时取消旧会话请求，释放对象 URL、预览和私有缓存；不自动补存旧 base64 或迁移浏览器数据。
 
-我的素材读取时也会做迁移：
+## 图片移除与全量清理
 
-- 有 `storageKey`：恢复 `coverUrl` 和 `data.dataUrl` 的可展示 URL。
-- 无 `storageKey` 且保存了 base64：写入 `image_files`，然后更新素材里的 `storageKey`。
+普通删除仍按引用关系清理：删除节点、画布、素材或历史后收集剩余引用；服务端发现其他已保存记录引用该键时拒绝逐文件删除，避免误删共享原文件。
 
-## 图片移除和清理
+设置里的「清空全部图片」是另一种明确确认后的操作：
 
-图片不是在删除节点时立即按节点逐张删除，而是做引用清理：
+1. 先 flush 当前待保存数据，确认范围包括画布、素材、历史和参考中的所有已保存图片。
+2. 服务端分阶段删除图片原文件和预览，SQLite 保留轻量 tombstone，清空旧展示 URL 并标记「已清理」。
+3. 保留账号、配置、API Key、项目结构、文字、视频、音频和本机 Agent 历史。
+4. 文件删除部分失败时明确报告未完成，剩余文件仍计入真实占用；可再次手动清理，不自动增加重试次数。
+5. 清理后的键不能下载、预览、作为有效参考或被旧保存/WebDAV 补回；本机已下载文件和远端备份不在清理范围内。
 
-1. 删除节点、清空画布、删除画布、删除素材、删除助手会话时，会触发 `cleanupImages`。
-2. `cleanupImages` 会收集当前仍被画布项目、素材和额外传入数据引用的所有 `storageKey`。
-3. `cleanupUnusedImages` 遍历 `image_files` 中的全部图片。
-4. 不在引用集合里的图片会被删除。
-5. 删除时会同时 `URL.revokeObjectURL`，并从内存缓存 `objectUrls` 移除。
+## ZIP、WebDAV 与修订保护
 
-这套方式可以避免同一张图片被画布、素材或助手同时引用时误删。
+ZIP 导出保留已清理记录而不打包旧文件；未被清理却缺失原文件时应报错，不静默生成缺文件备份。主动导入含原文件的 ZIP 会分配新媒体键并更新嵌套引用、参考和封面，不复活旧键；不含原文件的已清理记录继续保留该状态。
+
+记录写入携带已读取的修订号，WebDAV 历史集合替换使用读取快照时的集合修订号并在事务中完成。冲突需要重新加载，不自动合并整份项目。其他已经打开的浏览器需要刷新才能看到清理状态，本版不提供实时协作或托管云同步。

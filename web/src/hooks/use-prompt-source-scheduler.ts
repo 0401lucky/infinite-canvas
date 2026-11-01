@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { refreshDueSources } from "@/services/api/prompts";
 import { usePromptSourceStore } from "@/stores/use-prompt-source-store";
+import { useUserStore } from "@/stores/use-user-store";
 
 const CHECK_INTERVAL_MS = 60_000;
 
@@ -10,9 +11,10 @@ const CHECK_INTERVAL_MS = 60_000;
 export function usePromptSourceScheduler() {
     const queryClient = useQueryClient();
     const intervalMinutes = usePromptSourceStore((state) => state.schedule.intervalMinutes);
+    const ready = useUserStore((state) => state.ready && !state.loading);
 
     useEffect(() => {
-        if (!intervalMinutes) return;
+        if (!ready || !intervalMinutes) return;
         let running = false;
         const tick = async () => {
             if (running) return;
@@ -36,5 +38,5 @@ export function usePromptSourceScheduler() {
         void tick();
         const timer = window.setInterval(() => void tick(), CHECK_INTERVAL_MS);
         return () => window.clearInterval(timer);
-    }, [intervalMinutes, queryClient]);
+    }, [intervalMinutes, queryClient, ready]);
 }

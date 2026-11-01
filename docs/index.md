@@ -1,5 +1,12 @@
 # Infinite Canvas Documentation Index
 
+## AI Development Workflow
+
+- [Trellis Setup](../.trellis/README.md)
+- [Development Workflow](../.trellis/workflow.md)
+- [Project Coding Specs](../.trellis/spec/index.md)
+- Start with `trellis-start`; `AGENTS.md` remains authoritative. Trellis does not automatically run checks or commit changes.
+
 ## Overview
 
 - [Quick Start](/docs/overview/quick-start)
@@ -37,5 +44,6 @@
 
 ## Notes
 
-- Canvas projects and My Assets are primarily stored in the browser. WebDAV can be configured for cross-device synchronization.
-- The AI API key is stored in the browser, which sends requests directly to OpenAI-compatible endpoints.
+- The personal edition uses `server/` for single-administrator authentication, SQLite business records, and private media files. These changes still need manual acceptance; do not describe them as a hosted cloud-sync service.
+- Signed-in browsers receive API keys from the application service and send AI requests directly to providers. Protect SQLite, environment files, and backups as secrets.
+- The old static-only Vercel/Render setup does not supply the new application service or persistent disk. Docker durability, routes, plugins, and media responses remain pending verification.

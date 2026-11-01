@@ -1,8 +1,9 @@
 import { defaultConfig, resolveModelForCapability, type AiConfig } from "@/stores/use-config-store";
 import i18n from "@/i18n";
-import { ensureImagePreview, resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { ensureImagePreview, resolveImageUrl } from "@/services/image-storage";
+import { imageWasCleared } from "@/services/api/server";
 import { resolveMediaUrl } from "@/services/file-storage";
-import { imageMetadata, referenceUrl } from "@/lib/canvas/canvas-node-factory";
+import { referenceUrl } from "@/lib/canvas/canvas-node-factory";
 import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import type { CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
@@ -48,31 +49,25 @@ export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
             const metadata = node.metadata;
             const content = metadata?.content;
             if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && metadata?.storageKey) return { ...node, metadata: { ...metadata, content: await resolveMediaUrl(metadata.storageKey, content) } };
-            if (node.type !== CanvasNodeType.Image || !metadata || !content) return node;
+            if (node.type !== CanvasNodeType.Image || !metadata) return node;
             const images = await Promise.all(
                 (metadata.images || []).map(async (image) => {
-                    if (!image.content) return image;
                     void ensureImagePreview(image.storageKey);
-                    return { ...image, content: await resolveImageUrl(image.storageKey, image.content) };
+                    return { ...image, content: await resolveImageUrl(image.storageKey, image.content), cleared: imageWasCleared(image.storageKey) || image.cleared };
                 }),
             );
             if (metadata.storageKey) {
                 void ensureImagePreview(metadata.storageKey);
-                return { ...node, metadata: { ...metadata, content: await resolveImageUrl(metadata.storageKey, content), images } };
+                return { ...node, metadata: { ...metadata, content: await resolveImageUrl(metadata.storageKey, content), cleared: imageWasCleared(metadata.storageKey) || metadata.cleared, images } };
             }
-            if (!content.startsWith("data:image/")) return node;
-            return { ...node, metadata: { ...metadata, ...imageMetadata(await uploadImage(content)) } };
+            return { ...node, metadata: { ...metadata, images } };
         }),
     );
 }
 
 export async function hydrateAssistantImages(sessions: CanvasAssistantSession[]) {
-    const hydrateItem = async <T extends { dataUrl?: string; storageKey?: string }>(item: T) => {
-        if (item.storageKey) return { ...item, dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl) };
-        if (item.dataUrl?.startsWith("data:image/")) {
-            const image = await uploadImage(item.dataUrl);
-            return { ...item, dataUrl: image.url, storageKey: image.storageKey };
-        }
+    const hydrateItem = async <T extends { dataUrl?: string; storageKey?: string; cleared?: boolean }>(item: T) => {
+        if (item.storageKey) return { ...item, dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl), cleared: imageWasCleared(item.storageKey) || item.cleared };
         return item;
     };
     return Promise.all(

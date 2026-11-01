@@ -7,6 +7,7 @@ import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
 import { imageToDataUrl } from "@/services/image-storage";
+import { serverSessionSignal } from "@/services/api/server";
 import { imageSizePresets, inferMediaScale } from "@/lib/media-size";
 import type { ReferenceImage } from "@/types/image";
 
@@ -692,6 +693,9 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
 }
 
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
+    const signal = serverSessionSignal(options?.signal);
+    signal.throwIfAborted();
+    options = { ...options, signal };
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const script = resolveModelScript(config, config.model || config.imageModel);
@@ -752,6 +756,9 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
 }
 
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
+    const signal = serverSessionSignal(options?.signal);
+    signal.throwIfAborted();
+    options = { ...options, signal };
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
@@ -760,7 +767,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         const quality = normalizeQuality(config.quality);
         const requestSize = resolveRequestSize(config.size);
         const background = normalizeBackground(config.background);
-        const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
+        const refs = await Promise.all(references.map((image) => imageToDataUrl(image, options)));
         try {
             const result = await runModelPlugin({
                 capability: "image",
@@ -805,7 +812,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (background) {
         formData.set("background", background);
     }
-    const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
+    const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image, options) })));
     const imageField = files.length > 1 ? "image[]" : "image";
     files.forEach((file) => formData.append(imageField, file));
 
@@ -819,6 +826,9 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
 }
 
 export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {
+    const signal = serverSessionSignal(options?.signal);
+    signal.throwIfAborted();
+    options = { ...options, signal };
     const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
     const script = resolveModelScript(config, config.model || config.textModel);
     if (script) {
@@ -857,9 +867,11 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
 }
 
 export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
+    const signal = serverSessionSignal();
+    signal.throwIfAborted();
     try {
         if (config.apiFormat === "gemini") {
-            const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...config }) });
+            const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...config }), signal });
             validateGeminiPayload(response.data);
             return (response.data.models || [])
                 .map((model) => model.name?.replace(/^models\//, ""))
@@ -867,6 +879,7 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
                 .sort((a, b) => a.localeCompare(b));
         }
         const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.baseUrl, "/models"), {
+            signal,
             headers: {
                 Authorization: `Bearer ${config.apiKey}`,
             },

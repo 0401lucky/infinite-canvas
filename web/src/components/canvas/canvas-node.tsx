@@ -459,6 +459,7 @@ export const CanvasNode = React.memo(function CanvasNode({
 function NodeContent(props: NodeContentRendererProps) {
     if (props.node.type === CanvasNodeType.Config && props.renderNodeContent) return props.renderNodeContent(props.node);
     if (props.isBatchRoot && props.node.type === CanvasNodeType.Image) return <ImageNodeContent {...props} />;
+    if (props.node.type === CanvasNodeType.Image && props.node.metadata?.cleared && props.node.metadata.status !== "loading") return <ImageNodeContent {...props} />;
     if (props.node.type === CanvasNodeType.Text && props.node.metadata?.texts?.length && (props.node.metadata.status !== "error" || props.node.metadata.texts.some((text) => text.content))) return <TextContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent theme={props.theme} />;
     if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} />;
@@ -692,14 +693,12 @@ function ImageNodeContent(props: NodeContentRendererProps) {
     );
 }
 
-function EmptyImageContent({ theme }: NodeContentRendererProps) {
+function EmptyImageContent({ node, theme }: NodeContentRendererProps) {
     const { t } = useTranslation();
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-3" style={{ color: theme.node.placeholder }}>
-            <div className="flex size-14 items-center justify-center rounded-2xl" style={{ background: theme.toolbar.activeBg }}>
-                <ImageIcon className="size-6 opacity-30" />
-            </div>
-            <span className="text-[10px] tracking-[0.18em] opacity-50">{t("canvas.node.emptyImage")}</span>
+            <ImageIcon className="size-6 opacity-30" />
+            <span className="text-[10px] tracking-[0.18em] opacity-50">{t(node.metadata?.cleared ? "server.imageCleared" : "canvas.node.emptyImage")}</span>
         </div>
     );
 }
@@ -921,6 +920,7 @@ function ImageSlotStatus({ image }: { image?: CanvasNodeImage }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     const failed = image?.status === "error";
+    if (image?.cleared) return <div className="flex h-full items-center justify-center px-6 text-xs" style={{ color: theme.node.placeholder }}>{t("server.imageCleared")}</div>;
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center" style={{ background: theme.node.fill, color: failed ? theme.node.text : theme.node.activeStroke }}>
             {failed ? <span className="text-xs leading-5">{image.errorDetails || t("canvas.node.failed")}</span> : <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />}

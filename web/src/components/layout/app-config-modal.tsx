@@ -9,7 +9,9 @@ import { videoResolutionOptions } from "@/components/video-settings-panel";
 import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
 import { ConfigLocalProxy } from "@/components/layout/config-local-proxy";
 import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
-import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
+import { ConfigServerStorage } from "@/components/layout/config-server-storage";
+import { flushAppStorage } from "@/stores/use-user-store";
+import { serverSessionSignal } from "@/services/api/server";
 import type { AppLocale } from "@/i18n";
 import { exportAppConfig, importAppConfig } from "@/services/config-file";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
@@ -76,17 +78,26 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         (Object.keys(nextConfig) as Array<keyof AiConfig>).forEach((key) => updateConfig(key, nextConfig[key]));
     };
 
-    const finishConfig = () => {
-        const ready = config.channels.some((channel) => channel.baseUrl.trim() && channel.apiKey.trim() && channel.models.length);
-        setConfigDialogOpen(false);
-        if (!ready) return;
-        message.success(t(shouldPromptContinue ? "config.savedContinue" : "config.saved"));
-        clearPromptContinue();
+    const finishConfig = async () => {
+        const signal = serverSessionSignal();
+        try {
+            await flushAppStorage();
+            signal.throwIfAborted();
+            const ready = config.channels.some((channel) => channel.baseUrl.trim() && channel.apiKey.trim() && channel.models.length);
+            setConfigDialogOpen(false);
+            if (!ready) return;
+            message.success(t(shouldPromptContinue ? "config.savedContinue" : "config.saved"));
+            clearPromptContinue();
+        } catch (error) { if (!signal.aborted) message.error(error instanceof Error ? error.message : t("server.unavailable")); }
     };
 
     const loadConfigFile = async (file: File) => {
+        const signal = serverSessionSignal();
         try {
             await importAppConfig(file);
+            signal.throwIfAborted();
+            await flushAppStorage();
+            signal.throwIfAborted();
             message.success(t("config.imported"));
         } catch (error) {
             message.error(error instanceof Error ? error.message : t("config.importFailed"));
@@ -156,6 +167,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         try {
             const result = await syncAppDataToWebdav(webdav, updateWebdavProgress);
             updateWebdavConfig("lastSyncedAt", result.syncedAt);
+            await flushAppStorage();
             message.success(t("config.webdav.completed", { projects: result.projects, assets: result.assets, records: result.imageLogs + result.videoLogs, files: result.uploadedFiles, bytes: formatBytes(result.uploadedBytes) }));
         } catch (error) {
             setWebdavSyncStatus(error instanceof Error ? error.message : t("config.webdav.failed"));
@@ -346,9 +358,9 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                         ),
                     },
                     {
-                        key: "local-storage",
-                        label: t("config.tabs.localStorage"),
-                        children: <ConfigLocalStorage active={activeTab === "local-storage"} />,
+                        key: "server-storage",
+                        label: t("config.tabs.serverStorage"),
+                        children: <ConfigServerStorage active={activeTab === "server-storage"} />,
                     },
                 ]}
             />

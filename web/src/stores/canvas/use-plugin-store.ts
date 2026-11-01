@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
-import { localForageStorage } from "@/lib/localforage-storage";
+import { serverStateStorage } from "@/lib/server-storage";
+import { serverSessionEpoch } from "@/services/api/server";
 
 export type InstalledPlugin = {
     id: string;
@@ -17,6 +18,7 @@ export type InstalledPlugin = {
 };
 
 type PluginStore = {
+    hydrated: boolean;
     plugins: InstalledPlugin[];
     upsert: (plugin: Omit<InstalledPlugin, "installedAt"> & { installedAt?: string }) => void;
     setEnabled: (id: string, enabled: boolean) => void;
@@ -26,6 +28,7 @@ type PluginStore = {
 export const usePluginStore = create<PluginStore>()(
     persist(
         (set) => ({
+            hydrated: false,
             plugins: [],
             upsert: (plugin) =>
                 set((state) => {
@@ -39,7 +42,13 @@ export const usePluginStore = create<PluginStore>()(
         }),
         {
             name: "infinite-canvas:plugin_store",
-            storage: createJSONStorage(() => localForageStorage),
+            storage: createJSONStorage(() => serverStateStorage),
+            skipHydration: true,
+            partialize: (state) => ({ plugins: state.plugins }),
+            onRehydrateStorage: () => {
+                const epoch = serverSessionEpoch();
+                return (_state, error) => { if (epoch === serverSessionEpoch()) usePluginStore.setState({ hydrated: !error }); };
+            },
         },
     ),
 );

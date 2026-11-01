@@ -4,6 +4,7 @@ import type { AiConfig } from "@/stores/use-config-store";
 import type { UploadedImage } from "@/services/image-storage";
 import type { UploadedFile } from "@/services/file-storage";
 import type { ReferenceImage } from "@/types/image";
+import { imageWasCleared } from "@/services/api/server";
 import { CanvasNodeType, type CanvasImageGenerationType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasNodeTypeId, type Position } from "@/types/canvas";
 
 export function createCanvasNode(type: CanvasNodeTypeId, position: Position, metadata?: CanvasNodeMetadata): CanvasNodeData {
@@ -25,7 +26,7 @@ export function createCanvasNode(type: CanvasNodeTypeId, position: Position, met
 }
 
 export function imageMetadata(image: UploadedImage): CanvasNodeMetadata {
-    return { content: image.url, storageKey: image.storageKey, status: "success", naturalWidth: image.width, naturalHeight: image.height, bytes: image.bytes, mimeType: image.mimeType };
+    return { content: image.url, storageKey: image.storageKey, cleared: false, status: "success", naturalWidth: image.width, naturalHeight: image.height, bytes: image.bytes, mimeType: image.mimeType };
 }
 
 export function videoMetadata(video: UploadedFile): CanvasNodeMetadata {
@@ -37,6 +38,7 @@ export function audioMetadata(audio: UploadedFile): CanvasNodeMetadata {
 }
 
 export function referenceUrl(image: ReferenceImage) {
+    if (image.cleared || imageWasCleared(image.storageKey)) return undefined;
     return image.storageKey || image.url || (!image.dataUrl.startsWith("data:") ? image.dataUrl : undefined);
 }
 

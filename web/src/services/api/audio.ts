@@ -5,6 +5,7 @@ import { audioMimeType, normalizeAudioFormatValue, normalizeAudioSpeedValue, nor
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
+import { serverSessionSignal } from "@/services/api/server";
 
 type RequestOptions = { signal?: AbortSignal };
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
@@ -21,6 +22,9 @@ function aiHeaders(config: AiConfig) {
 }
 
 export async function requestAudioGeneration(config: AiConfig, prompt: string, options?: RequestOptions): Promise<Blob> {
+    const signal = serverSessionSignal(options?.signal);
+    signal.throwIfAborted();
+    options = { ...options, signal };
     const requestConfig = resolveModelRequestConfig(config, config.model || config.audioModel);
     const model = requestConfig.model.trim();
     const format = normalizeAudioFormatValue(config.audioFormat);
@@ -38,7 +42,7 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, o
                 params: { voice: normalizeAudioVoiceValue(config.audioVoice), format, speed: normalizeAudioSpeedValue(config.audioSpeed), instructions: config.audioInstructions.trim() },
                 signal: options?.signal,
             });
-            return await audioPluginBlob(result, format);
+            return await audioPluginBlob(result, format, signal);
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("audioGenerationFailed")));
         }
@@ -66,7 +70,7 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, o
     }
 }
 
-async function audioPluginBlob(result: unknown, format: string): Promise<Blob> {
+async function audioPluginBlob(result: unknown, format: string, signal: AbortSignal): Promise<Blob> {
     if (result instanceof Blob) return result.type.startsWith("audio/") ? result : new Blob([result], { type: audioMimeType(format) });
     let source = "";
     if (typeof result === "string") source = result;
@@ -76,7 +80,7 @@ async function audioPluginBlob(result: unknown, format: string): Promise<Blob> {
     }
     if (!source) throw new Error(apiText("scriptNoAudio"));
     const url = source.startsWith("data:") || /^https?:/i.test(source) ? source : `data:${audioMimeType(format)};base64,${source}`;
-    const blob = await (await fetch(withLocalProxy(url))).blob();
+    const blob = await (await fetch(withLocalProxy(url), { signal })).blob();
     return blob.type.startsWith("audio/") ? blob : new Blob([blob], { type: audioMimeType(format) });
 }
 

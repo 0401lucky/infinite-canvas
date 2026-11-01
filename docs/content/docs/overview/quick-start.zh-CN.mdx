@@ -5,44 +5,64 @@ description: 用最少步骤把无限画布跑起来
 
 # 快速开始
 
-如果你只是想先把项目跑起来，优先部署或启动 `web/` 前端。
+当前个人版需要同时运行 `web/` 的 Vite 前端和 `server/` 的 Node.js 应用服务。新增认证与持久化流程仍需[人工验收](/zh-CN/docs/progress/pending-test)。
 
-## Vercel 部署
+## 管理员配置
 
-在 Vercel 中导入仓库即可，根目录 `vercel.json` 会构建 `web/`。当前版本的 AI 请求由浏览器前台直连用户自己的 OpenAI 兼容地址，不需要额外配置服务端。
+复制 `.env.example` 为 `.env`，为 `ADMIN_PASSWORD` 设置强密码。用户名 `ADMIN_USERNAME` 默认 `admin`；`APP_ORIGIN` 必须与浏览器实际访问的源一致，包括端口。没有内置密码或注册入口。
 
 ## 本地启动
 
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
 cd infinite-canvas
+cp .env.example .env
+# 启动前填写 ADMIN_PASSWORD
+```
+
+使用 Node.js 24 或更新版本，在一个终端启动 API：
+
+```bash
+cd server
+npm ci
+npm run dev
+```
+
+在另一个终端，从仓库根目录启动前端：
+
+```bash
 cd web
 bun install
 bun run dev
 ```
 
-启动后访问：
+启动后访问并登录：
 
 ```text
 http://localhost:3000
 ```
+
+Vite 将同源 `/api` 请求转发到本地应用服务，默认 API 端口为 `3001`。服务不可达时会报错，不会回退浏览器业务存储。
 
 ## Docker 启动
 
 如果你需要基于当前源码构建镜像：
 
 ```bash
-docker build -t infinite-canvas .
-docker run --rm -p 3000:3000 infinite-canvas
+docker compose -f docker-compose.local.yml up -d --build
 ```
+
+先配置 `.env`。Compose 挂载完整应用数据目录；更新容器或修改访问域名之前请阅读 [Docker 部署](/zh-CN/docs/overview/docker)。发布镜像不一定已经包含这些 Unreleased 改动。
 
 ## 首次使用建议
 
-- 先打开右上角配置弹窗，填入自己的 `Base URL`、`API Key` 和模型名。
-- 如果需要提示词仓库内容，打开 `/prompts` 会由浏览器前端直连拉取并缓存到 IndexedDB。
-- 如果需要跨设备同步画布、素材和生成记录，可在配置弹窗中填写 WebDAV。
+- 登录后打开右上角配置弹窗，填入自己的 `Base URL`、`API Key` 和模型名。
+- 提示词仓库仍由浏览器直连拉取，其缓存通过应用服务保存。
+- 「服务端存储」提供真实空间统计与不可撤销的全部已保存图片、缩略图清理。
+- WebDAV 仍是用户自行配置的备份/同步目的地，不会自动恢复已清理的图片键。
 
 ## 说明
 
-- 当前画布项目和“我的素材”主要保存在浏览器本地，WebDAV 同步需要用户自行配置。
-- AI API Key 保存在浏览器本地，并由前端直接请求 OpenAI 兼容接口。
+- 配置和业务记录保存在 SQLite，媒体保存在私有服务端目录；旧浏览器数据库不会自动迁移或删除。
+- 登录后的浏览器仍会取得 API Key，并直接请求 AI 提供商。
+- 旧 Vercel 纯静态配置不能提供本版的认证与持久化 SQLite，本次不包含平台适配。

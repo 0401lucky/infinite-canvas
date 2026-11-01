@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
-import { Tooltip } from "antd";
-import { BookOpen, Keyboard, Puzzle, Settings2 } from "lucide-react";
+import { App, Tooltip } from "antd";
+import { BookOpen, CloudOff, CloudUpload, Keyboard, LogOut, Puzzle, Settings2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
@@ -12,6 +12,8 @@ import { cn } from "@/lib/utils";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useConfigStore } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { useStorageStore } from "@/stores/use-storage-store";
+import { useUserStore } from "@/stores/use-user-store";
 
 type UserStatusActionsProps = {
     showConfig?: boolean;
@@ -22,6 +24,9 @@ type UserStatusActionsProps = {
 
 export function UserStatusActions({ showConfig = true, variant = "default", onOpenShortcuts, onOpenPlugins }: UserStatusActionsProps) {
     const { i18n, t } = useTranslation();
+    const { modal, message } = App.useApp();
+    const pending = useStorageStore((state) => state.pending > 0 || state.canvasQueued);
+    const storageError = useStorageStore((state) => state.error);
     const theme = useThemeStore((state) => state.theme);
     const setTheme = useThemeStore((state) => state.setTheme);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -37,6 +42,7 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
 
     return (
         <div className="inline-flex shrink-0 items-center gap-1">
+            {storageError ? <button type="button" className={naturalIconClass} style={iconStyle} title={`${storageError} · ${t("server.reload")}`} onClick={() => modal.confirm({ title: t("server.reload"), content: t("server.reloadConfirm"), okText: t("server.reload"), cancelText: t("common.cancel"), onOk: () => useUserStore.getState().reloadData() })}><CloudOff className="size-4" /></button> : pending ? <span className={naturalIconClass} style={iconStyle} title={t("server.saving")}><CloudUpload className="size-4 animate-pulse" /></span> : null}
             {onOpenPlugins ? (
                 <button type="button" className={naturalIconClass} style={iconStyle} onClick={onOpenPlugins} aria-label={t("topNav.plugins")} title={t("topNav.plugins")}>
                     <Puzzle className="size-4" />
@@ -63,6 +69,7 @@ export function UserStatusActions({ showConfig = true, variant = "default", onOp
                     <Keyboard className="size-4" />
                 </button>
             ) : null}
+            <button type="button" className={naturalIconClass} style={iconStyle} title={t("server.logout")} aria-label={t("server.logout")} onClick={() => void useUserStore.getState().logout().catch((error: unknown) => message.error(error instanceof Error ? error.message : t("server.unavailable")))}><LogOut className="size-4" /></button>
         </div>
     );
 }

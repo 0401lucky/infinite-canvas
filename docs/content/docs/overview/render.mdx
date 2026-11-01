@@ -7,10 +7,8 @@ description: Deploy Infinite Canvas with Render
 
 [Deploy to Render](https://render.com/deploy?repo=https://github.com/basketikun/infinite-canvas)
 
-1. Select **Deploy to Render**.
-2. Sign in and connect GitHub as prompted.
-3. Confirm the deployment.
+The existing one-click configuration has not been adapted to the new administrator service and SQLite/media persistence. It does not configure the required administrator credentials or persistent disk; do not use the old flow expecting durable personal data.
 
-When deployment finishes, open the assigned `.onrender.com` domain.
+A Render deployment would need an application Web Service, a persistent data directory, `ADMIN_PASSWORD`, and `APP_ORIGIN` matching the assigned HTTPS domain. Free ephemeral storage is not a substitute for the application data volume. This platform adaptation is outside the current implementation and has not been verified.
 
-The default configuration uses Render's free Web Service. It sleeps after a period of inactivity and wakes on the next request. Application data is primarily stored in the browser, and prompt repositories are fetched by the frontend. The free tier is suitable for evaluation and demos; use Vercel or configure WebDAV for longer-term use.
+For the current source, follow [Docker deployment](/docs/overview/docker). Vercel's old static-only configuration also cannot provide the new authentication and storage service. WebDAV remains optional backup/sync, not a replacement for SQLite persistence.

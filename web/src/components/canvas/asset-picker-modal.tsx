@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { getImagePreviewRevision, subscribeImagePreviews } from "@/services/image-storage";
 import { assetCoverUrl, useAssetStore, type Asset } from "@/stores/use-asset-store";
+import { imageWasCleared } from "@/services/api/server";
 
 export type InsertAssetPayload = { kind: "text"; content: string; title: string } | { kind: "image"; dataUrl: string; title: string; storageKey?: string } | { kind: "video"; url: string; title: string; storageKey?: string; width?: number; height?: number };
 
@@ -65,6 +66,7 @@ function MyAssetsTab({ onInsert }: { onInsert: (payload: InsertAssetPayload) => 
         const query = keyword.trim().toLowerCase();
         return assets
             .filter((a) => a.kind === "text" || a.kind === "image" || a.kind === "video")
+            .filter((a) => a.kind !== "image" || !a.data.cleared && !imageWasCleared(a.data.storageKey))
             .filter((a) => kindFilter === "all" || a.kind === kindFilter)
             .filter((a) => !query || [a.title, ...(a.tags || [])].join(" ").toLowerCase().includes(query));
     }, [assets, keyword, kindFilter]);

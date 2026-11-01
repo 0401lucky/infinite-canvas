@@ -1,13 +1,25 @@
 ---
 title: Local Development
-description: Frontend-first local development
+description: Local frontend and application-service development
 ---
 
 # Local Development
 
-The main application lives in `web/`. The browser sends AI requests directly to the user's OpenAI-compatible endpoint.
+The React application lives in `web/`; `server/` provides administrator authentication, SQLite records, and private media files. The browser still sends AI requests directly to the user's provider. The new flow remains subject to manual acceptance.
 
-## Start the frontend
+## Configure and start the API
+
+From the repository root, copy `.env.example` to `.env` and set a strong `ADMIN_PASSWORD`. Use Node.js 24 or newer. `APP_ORIGIN` defaults to `http://localhost:3000` and must match the browser origin.
+
+```bash
+cd server
+npm ci
+npm run dev
+```
+
+The API defaults to port `3001` and reads the root `.env`. Business data defaults to the repository's private `data/` directory; do not put it under `web/` or publish it as static assets.
+
+## Start the frontend in another terminal
 
 ```bash
 cd web
@@ -15,7 +27,7 @@ bun install
 bun run dev
 ```
 
-Open `http://localhost:3000`, then enter your `Base URL`, `API Key`, and model names in Settings. Prompt sources and WebDAV are also accessed directly by the browser.
+Open `http://localhost:3000`, sign in, and configure your provider. Vite proxies `/api` to the API port from the root `.env`; private API requests do not use the AI proxy. Both processes must remain running. Loading/saving errors are visible and do not enable IndexedDB/localStorage fallback. Old browser data is not migrated.
 
 ## Start the documentation site
 
@@ -27,5 +39,7 @@ bun run dev
 Common locations:
 
 - Canvas, pages, and interactions: `web/`
+- Authentication, SQLite, media, and space cleanup: `server/src/`
+- Browser persistence adapter and session lifecycle: `web/src/lib/server-storage.ts`, `web/src/stores/use-user-store.ts`
 - Prompt caching: `web/src/services/api/prompts.ts`
 - Documentation content: `docs/content/docs/`

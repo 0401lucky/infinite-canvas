@@ -5,8 +5,8 @@ import { Download, FileUp, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { readZip } from "@/lib/zip";
-import { setMediaBlob } from "@/services/file-storage";
-import { setImageBlob } from "@/services/image-storage";
+import { restoreMediaFiles } from "@/services/file-storage";
+import { flushAppStorage } from "@/stores/use-user-store";
 import { CanvasDeleteProjectsDialog } from "@/components/canvas/canvas-delete-projects-dialog";
 import { CanvasProjectCard } from "@/components/canvas/canvas-project-card";
 import type { CanvasExportFile } from "@/types/canvas-export";
@@ -14,6 +14,8 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { hasAgentUrlBootstrap } from "@/lib/agent/agent-url-bootstrap";
+import { reportStorageError } from "@/stores/use-storage-store";
+import { serverSessionSignal } from "@/services/api/server";
 
 export default function CanvasPage() {
     const { message } = App.useApp();
@@ -39,25 +41,22 @@ export default function CanvasPage() {
     const createAndEnter = () => enterProject(createProject(t("canvas.defaultTitle", { count: projects.length + 1 })));
     const importCanvas = async (file?: File) => {
         if (!file) return;
+        const signal = serverSessionSignal();
         try {
             const zip = await readZip(file);
             const projectFile = zip.get("projects.json");
             if (!projectFile) throw new Error("missing projects.json");
             const data = JSON.parse(await projectFile.text()) as CanvasExportFile;
-            await Promise.all(
-                data.projects.flatMap((project) =>
-                    project.files.map(async (item) => {
-                        const blob = zip.get(item.path);
-                        if (!blob) return;
-                        const typedBlob = blob.type ? blob : blob.slice(0, blob.size, item.mimeType);
-                        await (item.storageKey.startsWith("image:") ? setImageBlob(item.storageKey, typedBlob) : setMediaBlob(item.storageKey, typedBlob));
-                    }),
-                ),
-            );
-            data.projects.forEach((item) => importProject(item.project));
+            signal.throwIfAborted();
+            if (data.app !== "infinite-canvas" || data.version !== 3 || !Array.isArray(data.projects)) throw new Error(t("canvas.importFailed"));
+            const restored = await restoreMediaFiles(data.projects, data.projects.flatMap((project) => project.files), zip);
+            signal.throwIfAborted();
+            restored.forEach((item) => importProject(item.project));
+            await flushAppStorage();
+            signal.throwIfAborted();
             message.success(t("canvas.imported", { count: data.projects.length }));
         } catch {
-            message.error(t("canvas.importFailed"));
+            if (!signal.aborted) message.error(t("canvas.importFailed"));
         } finally {
             if (inputRef.current) inputRef.current.value = "";
         }
@@ -82,7 +81,7 @@ export default function CanvasPage() {
                     <div className="flex items-center gap-2">
                         {selectedIds.length ? (
                             <>
-                                <Button disabled={!hydrated} icon={<Download className="size-4" />} onClick={() => void exportCanvasProjects(projects.filter((project) => selectedIds.includes(project.id)), `${t("canvas.title")}-${selectedIds.length}`)}>
+                                <Button disabled={!hydrated} icon={<Download className="size-4" />} onClick={() => void exportCanvasProjects(projects.filter((project) => selectedIds.includes(project.id)), `${t("canvas.title")}-${selectedIds.length}`).catch(reportStorageError)}>
                                     {t("canvas.exportSelected")}
                                 </Button>
                                 <Button disabled={!hydrated} onClick={() => setDeleteIds(selectedIds)}>

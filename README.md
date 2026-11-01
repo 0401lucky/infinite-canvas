@@ -128,13 +128,25 @@
 
 ## 快速开始
 
-AI API Key、Base URL、画布、素材和生成记录默认保存在浏览器本地。
+当前个人版需要 `web/` 前端与 `server/` 应用服务。管理员登录后，配置、画布、素材和生成记录保存在服务端 SQLite，媒体保存在服务端文件目录；AI 请求仍由浏览器直连。此改造尚待人工验收，详见[待测试](docs/content/docs/progress/pending-test.zh-CN.mdx)。
 
 ### 本地开发
 
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
 cd infinite-canvas
+cp .env.example .env
+```
+
+先在 `.env` 中设置强密码 `ADMIN_PASSWORD`，再分别启动两个终端：
+
+```bash
+# 终端一：Node.js 24 或更新版本
+cd server
+npm ci
+npm run dev
+
+# 终端二：仓库根目录出发
 cd web
 bun install
 bun run dev
@@ -145,12 +157,14 @@ bun run dev
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
 cd infinite-canvas
-docker compose up -d
+cp .env.example .env
+# 填写 ADMIN_PASSWORD；远程部署还须修改 APP_ORIGIN
+docker compose -f docker-compose.local.yml up -d --build
 ```
 
 运行后默认端口3000，可访问 `http://localhost:3000`。
 
-首次打开后进入右上角配置，填入自己的 OpenAI 兼容 `Base URL` 和 `API Key`。
+首次打开先使用管理员账号登录，再进入右上角配置，填入自己的 OpenAI 兼容 `Base URL` 和 `API Key`。Compose 使用持久化卷保存完整数据目录；更新容器时不要删除卷。旧浏览器数据不会自动迁移，纯静态托管不支持这一版的认证和 SQLite 存储。
 
 如果默认的OpenAI接口调用方式与您的API不同，可自定义生图/视频脚本调用。
 

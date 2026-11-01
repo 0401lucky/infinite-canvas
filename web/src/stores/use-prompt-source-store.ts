@@ -1,7 +1,9 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 
 import { DEFAULT_PROMPT_SOURCES, createPromptSource, type PromptSource } from "@/services/api/prompt-source-presets";
+import { serverStateStorage } from "@/lib/server-storage";
+import { serverSessionEpoch } from "@/services/api/server";
 
 export type PromptSourceSchedule = {
     intervalMinutes: number;
@@ -18,6 +20,7 @@ const defaultSchedule: PromptSourceSchedule = {
 export const PROMPT_SOURCE_INTERVALS = [0, 30, 60, 360, 1440];
 
 type PromptSourceStore = {
+    hydrated: boolean;
     sources: PromptSource[];
     schedule: PromptSourceSchedule;
     addSource: () => PromptSource;
@@ -30,6 +33,7 @@ type PromptSourceStore = {
 export const usePromptSourceStore = create<PromptSourceStore>()(
     persist(
         (set) => ({
+            hydrated: false,
             sources: DEFAULT_PROMPT_SOURCES,
             schedule: defaultSchedule,
             addSource: () => createPromptSource(),
@@ -45,6 +49,12 @@ export const usePromptSourceStore = create<PromptSourceStore>()(
         }),
         {
             name: PROMPT_SOURCE_STORE_KEY,
+            storage: createJSONStorage(() => serverStateStorage),
+            skipHydration: true,
+            onRehydrateStorage: () => {
+                const epoch = serverSessionEpoch();
+                return (_state, error) => { if (epoch === serverSessionEpoch()) usePromptSourceStore.setState({ hydrated: !error }); };
+            },
             partialize: (state) => ({ sources: state.sources, schedule: state.schedule }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<PromptSourceStore>;

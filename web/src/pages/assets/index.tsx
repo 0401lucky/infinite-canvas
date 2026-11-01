@@ -1,13 +1,15 @@
 import { Copy, Download, PencilLine, Search, Trash2, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { App, Button, Card, Drawer, Empty, Form, Image, Input, Modal, Pagination, Select, Space, Tag, Typography } from "antd";
-import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
 import { useCopyText } from "@/hooks/use-copy-text";
-import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
-import { getMediaBlob } from "@/services/file-storage";
-import { getImageBlob, getImagePreviewRevision, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
+import { useDownloadMedia } from "@/hooks/use-download-media";
+import { formatBytes } from "@/lib/image-utils";
+import { flushAppStorage } from "@/stores/use-user-store";
+import { imageWasCleared, serverSessionSignal } from "@/services/api/server";
+import { reportStorageError } from "@/stores/use-storage-store";
+import { getImagePreviewRevision, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
 import { cn } from "@/lib/utils";
 import { assetCoverUrl, useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
@@ -30,6 +32,7 @@ export default function AssetsPage() {
     const { message } = App.useApp();
     const { t } = useTranslation();
     const copyText = useCopyText();
+    const downloadMedia = useDownloadMedia();
     const [form] = Form.useForm<AssetFormValues>();
     const coverInputRef = useRef<HTMLInputElement>(null);
     const imageInputRef = useRef<HTMLInputElement>(null);
@@ -48,6 +51,7 @@ export default function AssetsPage() {
     const [deletingAsset, setDeletingAsset] = useState<Asset | null>(null);
     const [formKind, setFormKind] = useState<AssetKind>("text");
     const [imageDraft, setImageDraft] = useState<ImageDraft>(null);
+    const [coverDraft, setCoverDraft] = useState<{ url: string; storageKey?: string } | null>(null);
     const coverUrl = Form.useWatch("coverUrl", form) || "";
     const title = Form.useWatch("title", form) || "";
     const tags = Form.useWatch("tags", form) || [];
@@ -76,6 +80,7 @@ export default function AssetsPage() {
     const openCreate = () => {
         setEditingAsset(null);
         setImageDraft(null);
+        setCoverDraft(null);
         setFormKind("text");
         form.setFieldsValue({ kind: "text", title: "", coverUrl: "", tags: [], source: t("assets.manual"), note: "", content: "" });
         setIsAssetOpen(true);
@@ -85,6 +90,7 @@ export default function AssetsPage() {
         setEditingAsset(asset);
         setFormKind(asset.kind);
         setImageDraft(asset.kind === "image" ? asset.data : null);
+        setCoverDraft(asset.coverStorageKey ? { url: asset.coverUrl, storageKey: asset.coverStorageKey } : null);
         form.setFieldsValue({
             kind: asset.kind,
             title: asset.title,
@@ -98,41 +104,64 @@ export default function AssetsPage() {
     };
 
     const saveAsset = async () => {
-        const values = await form.validateFields();
-        const base = {
-            title: values.title.trim(),
-            coverUrl: values.coverUrl?.trim() || (values.kind === "image" && imageDraft ? imageDraft.dataUrl : ""),
-            tags: values.tags || [],
-            source: values.source?.trim(),
-            note: values.note?.trim(),
-            metadata: editingAsset?.metadata || { source: "manual" },
-        };
-
-        if (values.kind === "text") {
-            const asset = { ...base, kind: "text" as const, data: { content: (values.content || "").trim() } };
-            editingAsset ? updateAsset(editingAsset.id, asset) : addAsset(asset);
-        } else {
-            if (!imageDraft) {
-                message.error(t("assets.selectImage"));
-                return;
+        const signal = serverSessionSignal();
+        try {
+            const values = await form.validateFields();
+            signal.throwIfAborted();
+            let cover = values.coverUrl?.trim() || (values.kind === "image" && imageDraft ? imageDraft.dataUrl : "");
+            let coverStorageKey = coverDraft?.url === cover ? coverDraft.storageKey : cover === imageDraft?.dataUrl ? imageDraft.storageKey : undefined;
+            if (cover && !coverStorageKey) {
+                const stored = await uploadImage(cover, { signal });
+                signal.throwIfAborted();
+                cover = stored.url;
+                coverStorageKey = stored.storageKey;
+                setCoverDraft({ url: cover, storageKey: coverStorageKey });
+                form.setFieldValue("coverUrl", cover);
             }
-            const asset = { ...base, kind: "image" as const, data: imageDraft };
-            editingAsset ? updateAsset(editingAsset.id, asset) : addAsset(asset);
-        }
+            const base = {
+                title: values.title.trim(),
+                coverUrl: cover,
+                coverStorageKey,
+                coverCleared: false,
+                tags: values.tags || [],
+                source: values.source?.trim(),
+                note: values.note?.trim(),
+                metadata: editingAsset?.metadata || { source: "manual" },
+            };
 
-        message.success(editingAsset ? t("assets.updated") : t("assets.saved"));
-        setIsAssetOpen(false);
+            if (values.kind === "text") {
+                const asset = { ...base, kind: "text" as const, data: { content: (values.content || "").trim() } };
+                editingAsset ? updateAsset(editingAsset.id, asset) : addAsset(asset);
+            } else {
+                if (!imageDraft) {
+                    message.error(t("assets.selectImage"));
+                    return;
+                }
+                const asset = { ...base, kind: "image" as const, data: imageDraft };
+                editingAsset ? updateAsset(editingAsset.id, asset) : addAsset(asset);
+            }
+
+            await flushAppStorage();
+            signal.throwIfAborted();
+            message.success(editingAsset ? t("assets.updated") : t("assets.saved"));
+            setIsAssetOpen(false);
+        } catch (error) { if (!signal.aborted && error instanceof Error) message.error(error.message); }
     };
 
     const readCoverFile = async (file?: File) => {
         if (!file) return;
-        const dataUrl = await readFileAsDataUrl(file);
-        form.setFieldValue("coverUrl", dataUrl);
+        const signal = serverSessionSignal();
+        const image = await uploadImage(file, { signal });
+        signal.throwIfAborted();
+        setCoverDraft({ url: image.url, storageKey: image.storageKey });
+        form.setFieldValue("coverUrl", image.url);
     };
 
     const readImageFile = async (file?: File) => {
         if (!file || !file.type.startsWith("image/")) return;
-        const image = await uploadImage(file);
+        const signal = serverSessionSignal();
+        const image = await uploadImage(file, { signal });
+        signal.throwIfAborted();
         const draft = { dataUrl: image.url, storageKey: image.storageKey, width: image.width, height: image.height, bytes: image.bytes, mimeType: image.mimeType };
         setImageDraft(draft);
         if (!form.getFieldValue("coverUrl")) form.setFieldValue("coverUrl", draft.dataUrl);
@@ -146,17 +175,8 @@ export default function AssetsPage() {
 
     const downloadImage = async (asset: Asset) => {
         if (asset.kind !== "image" && asset.kind !== "video") return;
-        try {
-            const blob = await readAssetMediaBlob(asset);
-            if (!blob) {
-                message.error(t("assets.downloadFailed"));
-                return;
-            }
-            const ext = asset.data.mimeType?.split("/")[1]?.split("+")[0] || (asset.kind === "video" ? "mp4" : "png");
-            saveAs(blob, `${asset.title || "asset"}.${ext}`);
-        } catch {
-            message.error(t("assets.downloadFailed"));
-        }
+        const ext = asset.data.mimeType?.split("/")[1]?.split("+")[0] || (asset.kind === "video" ? "mp4" : "png");
+        await downloadMedia({ storageKey: asset.data.storageKey, url: asset.kind === "video" ? asset.data.url : asset.data.dataUrl || asset.coverUrl }, `${asset.title || "asset"}.${ext}`);
     };
 
     const exportAllAssets = async () => {
@@ -164,13 +184,15 @@ export default function AssetsPage() {
             message.warning(t("assets.noneToExport"));
             return;
         }
-        await exportAssets(validAssets, t("assets.packageName"));
+        await exportAssets(validAssets, t("assets.packageName")).catch(reportStorageError);
     };
 
     const importAssetZip = async (file?: File) => {
         if (!file) return;
+        const signal = serverSessionSignal();
         try {
             const importedAssets = await readAssetPackage(file);
+            signal.throwIfAborted();
             importedAssets.forEach((asset) => {
                 const payload = { ...asset } as Record<string, unknown>;
                 delete payload.id;
@@ -178,19 +200,26 @@ export default function AssetsPage() {
                 delete payload.updatedAt;
                 addAsset(payload as Parameters<typeof addAsset>[0]);
             });
+            await flushAppStorage();
+            signal.throwIfAborted();
             message.success(t("assets.imported", { count: importedAssets.length }));
         } catch {
-            message.error(t("assets.importFailed"));
+            if (!signal.aborted) message.error(t("assets.importFailed"));
         } finally {
             if (assetInputRef.current) assetInputRef.current.value = "";
         }
     };
 
-    const confirmDelete = () => {
+    const confirmDelete = async () => {
         if (!deletingAsset) return;
-        removeAsset(deletingAsset.id);
-        message.success(t("assets.deleted"));
-        setDeletingAsset(null);
+        const signal = serverSessionSignal();
+        try {
+            removeAsset(deletingAsset.id);
+            await flushAppStorage();
+            signal.throwIfAborted();
+            message.success(t("assets.deleted"));
+            setDeletingAsset(null);
+        } catch (error) { reportStorageError(error); }
     };
 
     return (
@@ -383,7 +412,7 @@ export default function AssetsPage() {
                     accept="image/*"
                     className="hidden"
                     onChange={(event) => {
-                        void readCoverFile(event.target.files?.[0]);
+                        void readCoverFile(event.target.files?.[0]).catch(reportStorageError);
                         event.target.value = "";
                     }}
                 />
@@ -393,7 +422,7 @@ export default function AssetsPage() {
                     accept="image/*"
                     className="hidden"
                     onChange={(event) => {
-                        void readImageFile(event.target.files?.[0]);
+                        void readImageFile(event.target.files?.[0]).catch(reportStorageError);
                         event.target.value = "";
                     }}
                 />
@@ -425,7 +454,7 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
                     {cover ? (
                         <img src={cover} alt={asset.title} className="aspect-[4/3] w-full object-cover" />
                     ) : (
-                        <div className="flex aspect-[4/3] items-center justify-center bg-stone-100 p-5 text-center text-sm leading-6 text-stone-600 dark:bg-stone-900 dark:text-stone-300">{asset.kind === "text" ? asset.data.content : t("assets.noCover")}</div>
+                        <div className="flex aspect-[4/3] items-center justify-center p-5 text-center text-sm leading-6 text-muted-foreground">{asset.kind === "text" ? asset.data.content : t(asset.kind === "image" && (asset.data.cleared || imageWasCleared(asset.data.storageKey)) ? "server.imageCleared" : "assets.noCover")}</div>
                     )}
                 </button>
             }
@@ -469,7 +498,7 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
                     </Button>
                 ) : null}
                 {asset.kind === "image" || asset.kind === "video" ? (
-                    <Button size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(asset)}>
+                    <Button size="small" disabled={asset.kind === "image" && (asset.data.cleared || imageWasCleared(asset.data.storageKey))} icon={<Download className="size-3.5" />} onClick={() => onDownload(asset)}>
                         {t("common.download")}
                     </Button>
                 ) : null}
@@ -484,12 +513,13 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
 function AssetDrawer({ asset, onClose, onCopy, onDownload }: { asset: Asset | null; onClose: () => void; onCopy: (asset: Asset) => void; onDownload: (asset: Asset) => void }) {
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
-    const cover = asset ? asset.coverUrl || (asset.kind === "image" ? asset.data.dataUrl : "") : "";
+    const cleared = asset?.kind === "image" && (asset.data.cleared || imageWasCleared(asset.data.storageKey));
+    const cover = asset && !cleared && !asset.coverCleared ? asset.coverUrl || (asset.kind === "image" ? asset.data.dataUrl : "") : "";
     return (
         <Drawer title={t("assets.details")} open={Boolean(asset)} size="large" onClose={onClose}>
             {asset ? (
                 <div className="space-y-5">
-                    {cover ? (
+                    {cleared ? <div className="py-12 text-center text-sm text-muted-foreground">{t("server.imageCleared")}</div> : cover ? (
                         <Image src={assetCoverUrl(asset)} preview={{ src: cover }} alt={asset.title} className="rounded-lg" />
                     ) : (
                         <div className="rounded-lg border border-stone-200 bg-stone-50 p-5 text-sm leading-6 text-stone-600 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300">{asset.kind === "text" ? asset.data.content : t("assets.noCover")}</div>
@@ -541,18 +571,6 @@ function AssetDrawer({ asset, onClose, onCopy, onDownload }: { asset: Asset | nu
             ) : null}
         </Drawer>
     );
-}
-
-async function readAssetMediaBlob(asset: Extract<Asset, { kind: "image" | "video" }>) {
-    const storageKey = asset.data.storageKey;
-    if (storageKey) {
-        const stored = asset.kind === "image" ? await getImageBlob(storageKey) : await getMediaBlob(storageKey);
-        if (stored) return stored;
-    }
-    const url = asset.kind === "video" ? asset.data.url : asset.data.dataUrl || asset.coverUrl;
-    if (!url) return null;
-    const response = await fetch(url);
-    return response.ok ? response.blob() : null;
 }
 
 function assetSummary(asset: Asset) {

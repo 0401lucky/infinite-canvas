@@ -9,6 +9,8 @@ See [SECURITY.md](https://github.com/basketikun/infinite-canvas/blob/main/SECURI
 
 Use GitHub private vulnerability reporting or a Security Advisory. If unavailable, email [1844025705@qq.com](mailto:1844025705@qq.com) with `[infinite-canvas security]` in the subject.
 
-Include the affected version or commit, reproduction steps, impact and prerequisites, redacted logs or proof of concept, and whether browser storage, API keys, WebDAV, AI provider configuration, or network requests are involved.
+Include the affected version or commit, reproduction steps, impact and prerequisites, redacted logs or proof of concept, and whether authentication, server storage, API keys, WebDAV, AI provider configuration, or network requests are involved.
+
+The personal edition stores credentials and business records in SQLite, with media in private server directories. Signed-in browsers still receive AI keys to call providers directly. Protect `.env`, data volumes, and backups; use a strong administrator password and HTTPS. There is no login IP rate limiting. New authentication and deployment behavior still needs manual acceptance.
 
 The project prioritizes vulnerabilities caused by repository code or defaults, including XSS, sensitive-data exposure, file processing, import/export, WebDAV, access control, and supply-chain risks. Problems confined to third-party services, leaked user credentials, recommendations without an exploit path, phishing, and account recovery are normally outside scope.

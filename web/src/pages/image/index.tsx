@@ -1,11 +1,14 @@
 import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, ImagePlus, LoaderCircle, PenLine, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Image, Input, Modal, Tag, Tooltip, Typography } from "antd";
-import localforage from "localforage";
-import { saveAs } from "file-saver";
+import { createServerRecordStorage } from "@/lib/server-storage";
+import { reportStorageError } from "@/stores/use-storage-store";
+import { imageWasCleared, serverSessionEpoch, serverSessionSignal } from "@/services/api/server";
+import { flushAppStorage } from "@/stores/use-user-store";
 import { useTranslation } from "react-i18next";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
+import { useDownloadMedia } from "@/hooks/use-download-media";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
@@ -26,6 +29,7 @@ type GeneratedImage = {
     id: string;
     dataUrl: string;
     storageKey?: string;
+    cleared?: boolean;
     durationMs: number;
     width: number;
     height: number;
@@ -65,9 +69,10 @@ type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => 
 
 const LOG_STORE_KEY = "infinite-canvas:image_generation_logs";
 const RESULT_ACTION_BUTTON_CLASS = "min-w-0 px-1.5 [&_.ant-btn-icon]:shrink-0 [&>span:last-child]:min-w-0 [&>span:last-child]:truncate";
-const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
+const logStore = createServerRecordStorage("image_generation_logs");
 
 export default function ImagePage() {
+    const downloadMedia = useDownloadMedia();
     const { message } = App.useApp();
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
@@ -116,38 +121,46 @@ export default function ImagePage() {
     }, []);
 
     const addReferences = async (files?: FileList | null) => {
-        const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
-        const nextReferences = await Promise.all(
-            imageFiles.map(async (file) => {
-                const image = await uploadImage(file);
-                return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
-            }),
-        );
-        setReferences((value) => [...value, ...nextReferences]);
+        const signal = serverSessionSignal();
+        try {
+            const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
+            const nextReferences = await Promise.all(
+                imageFiles.map(async (file) => {
+                    const image = await uploadImage(file, { signal });
+                    return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
+                }),
+            );
+            signal.throwIfAborted();
+            setReferences((value) => [...value, ...nextReferences]);
+        } catch (error) { reportStorageError(error); }
     };
 
     const addReferencesFromClipboard = async () => {
+        const signal = serverSessionSignal();
         try {
             const items = await navigator.clipboard.read();
             const blobs = await Promise.all(items.flatMap((item) => item.types.filter((type) => type.startsWith("image/")).map((type) => item.getType(type))));
+            signal.throwIfAborted();
             if (!blobs.length) {
                 message.error(t("imageWorkbench.clipboardEmpty"));
                 return;
             }
             const nextReferences = await Promise.all(
                 blobs.map(async (blob, index) => {
-                    const image = await uploadImage(blob);
+                    const image = await uploadImage(blob, { signal });
                     return { id: nanoid(), name: `clipboard-${index + 1}.png`, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
                 }),
             );
+            signal.throwIfAborted();
             setReferences((value) => [...value, ...nextReferences]);
             message.success(t("imageWorkbench.clipboardAdded", { count: nextReferences.length }));
-        } catch {
-            message.error(t("imageWorkbench.clipboardEmpty"));
+        } catch (error) {
+            if (!signal.aborted) message.error(error instanceof Error ? error.message : t("imageWorkbench.clipboardEmpty"));
         }
     };
 
     const generate = async () => {
+        const epoch = serverSessionEpoch();
         const agentTaskId = agentTaskIdRef.current;
         agentTaskIdRef.current = undefined;
         const text = prompt.trim();
@@ -180,6 +193,7 @@ export default function ImagePage() {
         const tasks = Array.from({ length: generationCount }, (_, index) => runGenerationSlot(index, snapshot));
 
         const result = await Promise.allSettled(tasks);
+        if (epoch !== serverSessionEpoch()) return;
         const successImages = result.filter((item): item is PromiseFulfilledResult<GeneratedImage> => item.status === "fulfilled").map((item) => item.value);
         const successCount = successImages.length;
         const failCount = generationCount - successCount;
@@ -188,7 +202,7 @@ export default function ImagePage() {
         if (agentTaskId) updateAgentTask(agentTaskId, { status: successCount ? "succeeded" : "failed", successCount, failCount, error: successCount ? undefined : error });
 
         try {
-            saveLog(
+            await saveLog(
                 buildLog({
                     prompt: text,
                     model,
@@ -202,7 +216,7 @@ export default function ImagePage() {
                 }),
             );
             successCount ? message.success(t("imageWorkbench.generated")) : message.error(failed?.reason instanceof Error ? failed.reason.message : t("workbench.generationFailed"));
-        } finally {
+        } catch (error) { reportStorageError(error); } finally {
             setRunning(false);
         }
     };
@@ -229,35 +243,48 @@ export default function ImagePage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoRunToken]);
 
-    const downloadImage = (image: GeneratedImage, index: number) => {
-        saveAs(image.dataUrl, `image-${index + 1}.png`);
+    const downloadImage = async (image: GeneratedImage, index: number) => {
+        const extension = image.mimeType?.split("/")[1]?.split("+")[0] || "png";
+        await downloadMedia({ storageKey: image.storageKey, url: image.dataUrl }, `image-${index + 1}.${extension}`);
     };
 
     const addResultToReferences = async (image: GeneratedImage, index: number) => {
-        const stored = await uploadImage(image.dataUrl);
-        setReferences((value) => [...value, { id: nanoid(), name: `result-${index + 1}.png`, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }]);
-        message.success(t("imageWorkbench.addedReference"));
+        const signal = serverSessionSignal();
+        try {
+            const stored = await uploadImage(image.dataUrl, { signal });
+            signal.throwIfAborted();
+            setReferences((value) => [...value, { id: nanoid(), name: `result-${index + 1}.png`, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }]);
+            message.success(t("imageWorkbench.addedReference"));
+        } catch (error) { reportStorageError(error); }
     };
 
     const saveResultToAssets = async (image: GeneratedImage, index: number) => {
-        const stored = await uploadImage(image.dataUrl);
-        addAsset({
-            kind: "image",
-            title: t("imageWorkbench.resultTitle", { count: index + 1 }),
-            coverUrl: stored.url,
-            tags: [],
-            source: t("imageWorkbench.source"),
-            data: { dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType },
-            metadata: { source: "image-page", prompt },
-        });
-        message.success(t("common.addedToAssets"));
+        const signal = serverSessionSignal();
+        try {
+            const stored = await uploadImage(image.dataUrl, { signal });
+            signal.throwIfAborted();
+            addAsset({
+                kind: "image",
+                title: t("imageWorkbench.resultTitle", { count: index + 1 }),
+                coverUrl: stored.url,
+                tags: [],
+                source: t("imageWorkbench.source"),
+                data: { dataUrl: stored.url, storageKey: stored.storageKey, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType },
+                metadata: { source: "image-page", prompt },
+            });
+            await flushAppStorage();
+            signal.throwIfAborted();
+            message.success(t("common.addedToAssets"));
+        } catch (error) { reportStorageError(error); }
     };
 
     const insertPickedAsset = async (payload: InsertAssetPayload) => {
+        const signal = serverSessionSignal();
         if (payload.kind === "text") {
             setPrompt(payload.content);
         } else if (payload.kind === "image") {
-            const stored = await uploadImage(payload.dataUrl);
+            const stored = await uploadImage(payload.dataUrl, { signal });
+            signal.throwIfAborted();
             setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }]);
         } else {
             message.warning(t("imageWorkbench.unsupportedAsset"));
@@ -275,22 +302,36 @@ export default function ImagePage() {
         setPreviewLog(null);
     };
 
-    const deleteSelectedLogs = () => {
+    const deleteSelectedLogs = async () => {
         const imageKeys = logs.filter((log) => selectedLogIds.includes(log.id)).flatMap((log) => log.images.map((image) => image.storageKey).filter((key): key is string => Boolean(key)));
-        void Promise.all([deleteStoredImages(imageKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(refreshLogs);
-        if (previewLog && selectedLogIds.includes(previewLog.id)) {
-            setPreviewLog(null);
-            setResults([]);
-        }
-        setSelectedLogIds([]);
-        setDeleteConfirmOpen(false);
+        try {
+            await Promise.all(selectedLogIds.map((id) => logStore.removeItem(id)));
+            await deleteStoredImages(imageKeys);
+            await refreshLogs();
+            if (previewLog && selectedLogIds.includes(previewLog.id)) {
+                setPreviewLog(null);
+                setResults([]);
+            }
+            setSelectedLogIds([]);
+            setDeleteConfirmOpen(false);
+        } catch (error) { reportStorageError(error); }
     };
 
-    const saveLog = (log: GenerationLog) => {
-        void logStore.setItem(log.id, serializeLog(log)).then(refreshLogs);
+    const saveLog = async (log: GenerationLog) => {
+        const signal = serverSessionSignal();
+        await logStore.setItem(log.id, serializeLog(log));
+        signal.throwIfAborted();
+        await refreshLogs();
     };
 
-    const refreshLogs = async () => setLogs(await readStoredLogs());
+    const refreshLogs = async () => {
+        const signal = serverSessionSignal();
+        try {
+            const items = await readStoredLogs();
+            signal.throwIfAborted();
+            setLogs(items);
+        } catch (error) { reportStorageError(error); }
+    };
 
     const previewGenerationLog = async (log: GenerationLog) => {
         setPreviewLog(log);
@@ -319,12 +360,14 @@ export default function ImagePage() {
     };
 
     const runGenerationSlot = async (index: number, snapshot: { text: string; config: AiConfig; references: ReferenceImage[] }) => {
+        const signal = serverSessionSignal();
         const itemStartedAt = performance.now();
         try {
-            const result = snapshot.references.length ? await requestEdit(snapshot.config, snapshot.text, snapshot.references) : await requestGeneration(snapshot.config, snapshot.text);
+            const result = snapshot.references.length ? await requestEdit(snapshot.config, snapshot.text, snapshot.references, { signal }) : await requestGeneration(snapshot.config, snapshot.text, { signal });
+            signal.throwIfAborted();
             const image = result[0];
             if (!image) throw new Error(t("imageWorkbench.missingResult"));
-            const stored = await uploadImage(image.dataUrl);
+            const stored = await uploadImage(image.dataUrl, { signal });
             const nextImage: GeneratedImage = { id: image.id, dataUrl: stored.url, ...(stored.storageKey ? { storageKey: stored.storageKey } : {}), durationMs: performance.now() - itemStartedAt, width: stored.width, height: stored.height, bytes: stored.bytes, mimeType: stored.mimeType };
             setResults((value) => updateResultAt(value, index, { status: "success", image: nextImage }));
             return nextImage;
@@ -342,7 +385,7 @@ export default function ImagePage() {
         const retryStartedAt = performance.now();
         try {
             const image = await runGenerationSlot(index, snapshot);
-            saveLog(
+            await saveLog(
                 buildLog({
                     prompt: snapshot.text,
                     model,
@@ -546,7 +589,7 @@ export default function ImagePage() {
                 </div>
             </Drawer>
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
-            <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
+            <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload).catch(reportStorageError)} onClose={() => setAssetPickerOpen(false)} />
             <Modal title={t("workbench.deleteLogs")} open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText={t("common.delete")} okButtonProps={{ danger: true }} cancelText={t("common.cancel")}>
                 {t("workbench.deleteLogsConfirm", { count: selectedLogIds.length })}
             </Modal>
@@ -586,9 +629,11 @@ function ResultImageCard({
 }) {
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
+    const cleared = image.cleared || imageWasCleared(image.storageKey);
+    const available = !cleared && Boolean(image.dataUrl);
     return (
         <div className="overflow-hidden rounded-lg border border-stone-200 bg-background dark:border-stone-800">
-            <Image src={previewUrlFor(image.storageKey) || image.dataUrl} preview={{ src: image.dataUrl }} alt={t("imageWorkbench.resultAlt", { count: index + 1 })} className="aspect-square object-cover" />
+            {available ? <Image src={previewUrlFor(image.storageKey) || image.dataUrl} preview={{ src: image.dataUrl }} alt={t("imageWorkbench.resultAlt", { count: index + 1 })} className="aspect-square object-cover" /> : <div className="flex aspect-square items-center justify-center text-sm text-muted-foreground">{t(cleared ? "server.imageCleared" : "common.imageReadFailed")}</div>}
             <div className="space-y-2 border-t border-stone-200 px-3 py-2.5 dark:border-stone-800">
                 <div className="flex min-w-0 gap-x-2 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
                     <span>
@@ -599,17 +644,17 @@ function ResultImageCard({
                 </div>
                 <div className="grid min-w-0 grid-cols-3 gap-2">
                     <Tooltip title={t("common.addToAssets")}>
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => void onSaveAsset(image, index)}>
+                        <Button disabled={!available} className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => void onSaveAsset(image, index)}>
                             {t("common.addToAssets")}
                         </Button>
                     </Tooltip>
                     <Tooltip title={t("imageWorkbench.addReference")}>
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<PenLine className="size-3.5" />} onClick={() => void onEdit(image, index)}>
+                        <Button disabled={!available} className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<PenLine className="size-3.5" />} onClick={() => void onEdit(image, index)}>
                             {t("imageWorkbench.addReference")}
                         </Button>
                     </Tooltip>
                     <Tooltip title={t("common.download")}>
-                        <Button className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(image, index)}>
+                        <Button disabled={!available} className={RESULT_ACTION_BUTTON_CLASS} size="small" icon={<Download className="size-3.5" />} onClick={() => void onDownload(image, index)}>
                             {t("common.download")}
                         </Button>
                     </Tooltip>
@@ -771,16 +816,12 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
 
 async function readStoredLogs() {
     if (typeof window === "undefined") return [];
-    try {
         const values: GenerationLog[] = [];
         await logStore.iterate<GenerationLog, void>((value) => {
             values.push(value);
         });
         const logs = await Promise.all(values.map(normalizeLog));
         return logs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    } catch {
-        return [];
-    }
 }
 
 async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog> {

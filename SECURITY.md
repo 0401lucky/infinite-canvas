@@ -31,11 +31,36 @@ Please include:
 
 ## Scope
 
+### Application authentication and data
+
+- The personal edition uses one administrator account. Passwords use Argon2id;
+  opaque session tokens are stored as hashes and sent in HttpOnly,
+  SameSite=Strict cookies. HTTPS deployments enable Secure cookies through
+  `APP_ORIGIN`. Sessions expire at a fixed time, seven days by default.
+- Authentication protects business records, media originals, thumbnails, and
+  storage operations. Write origins must match `APP_ORIGIN`. There is no
+  registration, login IP rate limiting, or account locking; use a strong
+  administrator password and HTTPS rather than treating this as brute-force
+  protection.
+- Configuration, including AI API keys and WebDAV credentials, is stored in
+  SQLite records, not encrypted by the administrator password hash. Protect
+  the private data directory, `.env`, and backups. Never place them under
+  frontend/static directories.
+- Signed-in browsers still receive provider credentials and call AI providers
+  directly. Server persistence does not hide keys from the authenticated page,
+  trusted plugins, or someone controlling that browser.
+- Image cleanup is irreversible and covers saved originals and thumbnails,
+  including referenced images. Local Canvas Agent history is a separate
+  storage owner and is not part of application image cleanup.
+
+These Unreleased authentication, persistence, and Docker changes still require
+manual acceptance; this policy is not a claim of verified production hardening.
+
 ### Canvas node plugins
 
 The canvas supports third-party node plugins loaded from a remote URL. By
 design, an installed plugin's code runs directly inside the web app with full
-access to the page, including locally stored data such as AI API keys. This is
+access to the page, including credentials loaded after sign-in such as AI API keys. This is
 an intentional trade-off for extensibility, and the installer shows a warning
 before installing. Therefore:
 
@@ -50,7 +75,7 @@ before installing. Therefore:
 Examples of in-scope reports:
 
 - Cross-site scripting or token exfiltration in the web app.
-- Exposure of locally stored API keys or synced canvas data caused by project
+- Exposure of stored API keys, authenticated private records, or synced canvas data caused by project
   code.
 - Unsafe file handling, import/export behavior, or WebDAV proxy behavior.
 - Authentication, authorization, or access-control flaws in project-managed

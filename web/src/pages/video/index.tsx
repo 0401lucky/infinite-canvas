@@ -1,9 +1,12 @@
 import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, LoaderCircle, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, VideoIcon } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Input, Modal, Tag, Typography } from "antd";
-import localforage from "localforage";
+import { createServerRecordStorage } from "@/lib/server-storage";
+import { reportStorageError } from "@/stores/use-storage-store";
+import { ServerApiError, serverSessionSignal } from "@/services/api/server";
+import { useDownloadMedia } from "@/hooks/use-download-media";
+import { flushAppStorage } from "@/stores/use-user-store";
 import { nanoid } from "nanoid";
-import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
@@ -65,9 +68,10 @@ type GenerationLogConfig = Pick<AiConfig, "model" | "videoModel" | "size" | "vqu
 type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
 
 const LOG_STORE_KEY = "infinite-canvas:video_generation_logs";
-const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_generation_logs" });
+const logStore = createServerRecordStorage("video_generation_logs");
 
 export default function VideoPage() {
+    const downloadMedia = useDownloadMedia();
     const { message } = App.useApp();
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
@@ -112,21 +116,25 @@ export default function VideoPage() {
     }, [running, startedAt]);
 
     useEffect(() => {
-        void refreshLogs();
+        void refreshLogs().catch(reportStorageError);
     }, []);
 
     const addReferences = async (files?: FileList | null) => {
-        const selectedFiles = Array.from(files || []);
-        const unsupported = selectedFiles.filter((file) => !file.type.startsWith("image/"));
-        if (unsupported.length) message.warning(t("videoWorkbench.unsupportedFiles"));
-        const imageFiles = selectedFiles.filter((file) => file.type.startsWith("image/")).slice(0, 7 - references.length);
-        const nextReferences = await Promise.all(
-            imageFiles.map(async (file) => {
-                const image = await uploadImage(file);
-                return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
-            }),
-        );
-        setReferences((value) => [...value, ...nextReferences].slice(0, 7));
+        const signal = serverSessionSignal();
+        try {
+            const selectedFiles = Array.from(files || []);
+            const unsupported = selectedFiles.filter((file) => !file.type.startsWith("image/"));
+            if (unsupported.length) message.warning(t("videoWorkbench.unsupportedFiles"));
+            const imageFiles = selectedFiles.filter((file) => file.type.startsWith("image/")).slice(0, 7 - references.length);
+            const nextReferences = await Promise.all(
+                imageFiles.map(async (file) => {
+                    const image = await uploadImage(file, { signal });
+                    return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
+                }),
+            );
+            signal.throwIfAborted();
+            setReferences((value) => [...value, ...nextReferences].slice(0, 7));
+        } catch (error) { reportStorageError(error); }
     };
 
     const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>) => {
@@ -149,26 +157,30 @@ export default function VideoPage() {
     };
 
     const addReferencesFromClipboard = async () => {
+        const signal = serverSessionSignal();
         try {
             const items = await navigator.clipboard.read();
             const blobs = await Promise.all(items.flatMap((item) => item.types.filter((type) => type.startsWith("image/")).map((type) => item.getType(type))));
+            signal.throwIfAborted();
             if (!blobs.length) {
                 message.error(t("videoWorkbench.clipboardEmpty"));
                 return;
             }
             const nextReferences = await Promise.all(
                 blobs.slice(0, 7 - references.length).map(async (blob, index) => {
-                    const image = await uploadImage(blob);
+                    const image = await uploadImage(blob, { signal });
                     return { id: nanoid(), name: `clipboard-${index + 1}.png`, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
                 }),
             );
+            signal.throwIfAborted();
             setReferences((value) => [...value, ...nextReferences].slice(0, 7));
             message.success(t("videoWorkbench.clipboardAdded", { count: nextReferences.length }));
-        } catch {
-            message.error(t("videoWorkbench.clipboardEmpty"));
+        } catch (error) {
+            if (!signal.aborted) message.error(error instanceof Error ? error.message : t("videoWorkbench.clipboardEmpty"));
         }
     };
     const generate = async () => {
+        const signal = serverSessionSignal();
         const agentTaskId = agentTaskIdRef.current;
         agentTaskIdRef.current = undefined;
         const snapshot = buildRequestSnapshot();
@@ -184,15 +196,18 @@ export default function VideoPage() {
         const batchStartedAt = performance.now();
         setStartedAt(batchStartedAt);
         try {
-            const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references);
+            const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references, { signal });
+            signal.throwIfAborted();
             const log = buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, durationMs: 0, status: "pending", task });
             await saveLog(log, false);
+            signal.throwIfAborted();
             void pollGenerationLog(log, snapshot.config, agentTaskId);
         } catch (error) {
+            if (signal.aborted) return;
             const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
             setResults([{ id: nanoid(), status: "failed", error: errorMessage }]);
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
-            await saveLog(buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, durationMs: performance.now() - batchStartedAt, status: "failed", error: errorMessage }));
+            if (!(error instanceof ServerApiError)) await saveLog(buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, durationMs: performance.now() - batchStartedAt, status: "failed", error: errorMessage })).catch(reportStorageError);
             message.error(errorMessage);
             setRunning(false);
         }
@@ -239,27 +254,34 @@ export default function VideoPage() {
     };
 
     const downloadVideo = (video: GeneratedVideo) => {
-        saveAs(video.url, "video.mp4");
+        return downloadMedia({ storageKey: video.storageKey, url: video.url }, "video.mp4");
     };
 
-    const saveResultToAssets = (video: GeneratedVideo) => {
-        addAsset({
-            kind: "video",
-            title: t("videoWorkbench.resultTitle"),
-            coverUrl: "",
-            tags: [],
-            source: t("videoWorkbench.source"),
-            data: { url: video.url, storageKey: video.storageKey, width: video.width, height: video.height, bytes: video.bytes, mimeType: video.mimeType },
-            metadata: { source: "video-page", prompt },
-        });
-        message.success(t("common.addedToAssets"));
+    const saveResultToAssets = async (video: GeneratedVideo) => {
+        const signal = serverSessionSignal();
+        try {
+            addAsset({
+                kind: "video",
+                title: t("videoWorkbench.resultTitle"),
+                coverUrl: "",
+                tags: [],
+                source: t("videoWorkbench.source"),
+                data: { url: video.url, storageKey: video.storageKey, width: video.width, height: video.height, bytes: video.bytes, mimeType: video.mimeType },
+                metadata: { source: "video-page", prompt },
+            });
+            await flushAppStorage();
+            signal.throwIfAborted();
+            message.success(t("common.addedToAssets"));
+        } catch (error) { reportStorageError(error); }
     };
 
     const insertPickedAsset = async (payload: InsertAssetPayload) => {
+        const signal = serverSessionSignal();
         if (payload.kind === "text") {
             setPrompt(payload.content);
         } else if (payload.kind === "image") {
-            const stored = await uploadImage(payload.dataUrl);
+            const stored = await uploadImage(payload.dataUrl, { signal });
+            signal.throwIfAborted();
             setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }].slice(0, 7));
         }
         setAssetPickerOpen(false);
@@ -275,27 +297,35 @@ export default function VideoPage() {
         setPreviewLog(null);
     };
 
-    const deleteSelectedLogs = () => {
+    const deleteSelectedLogs = async () => {
         const mediaKeys = logs
             .filter((log) => selectedLogIds.includes(log.id))
             .map((log) => log.video?.storageKey)
             .filter((key): key is string => Boolean(key));
-        void Promise.all([deleteStoredMedia(mediaKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(() => refreshLogs());
-        if (previewLog && selectedLogIds.includes(previewLog.id)) {
-            setPreviewLog(null);
-            setResults([]);
-        }
-        setSelectedLogIds([]);
-        setDeleteConfirmOpen(false);
+        try {
+            await Promise.all(selectedLogIds.map((id) => logStore.removeItem(id)));
+            await deleteStoredMedia(mediaKeys);
+            await refreshLogs();
+            if (previewLog && selectedLogIds.includes(previewLog.id)) {
+                setPreviewLog(null);
+                setResults([]);
+            }
+            setSelectedLogIds([]);
+            setDeleteConfirmOpen(false);
+        } catch (error) { reportStorageError(error); }
     };
 
     const saveLog = async (log: GenerationLog, resumePending = true) => {
+        const signal = serverSessionSignal();
         await logStore.setItem(log.id, serializeLog(log));
+        signal.throwIfAborted();
         await refreshLogs(resumePending);
     };
 
     const refreshLogs = async (resumePending = true) => {
+        const signal = serverSessionSignal();
         const nextLogs = await readStoredLogs();
+        signal.throwIfAborted();
         setLogs(nextLogs);
         if (resumePending) resumePendingLogs(nextLogs);
         return nextLogs;
@@ -308,6 +338,7 @@ export default function VideoPage() {
     };
 
     const pollGenerationLog = async (log: GenerationLog, configOverride?: AiConfig, agentTaskId?: string) => {
+        const signal = serverSessionSignal();
         if (!log.task || activeLogIdsRef.current.has(log.id)) return;
         activeLogIdsRef.current.add(log.id);
         setRunning(true);
@@ -316,9 +347,12 @@ export default function VideoPage() {
         const taskConfig = buildVideoConfig({ ...effectiveConfig, ...log.config }, log.task.model || log.model);
         try {
             for (let attempt = 0; attempt < 120; attempt += 1) {
-                const state = await pollVideoGenerationTask(configOverride || taskConfig, log.task);
+                signal.throwIfAborted();
+                const state = await pollVideoGenerationTask(configOverride || taskConfig, log.task, { signal });
+                signal.throwIfAborted();
                 if (state.status === "completed") {
                     const stored = await storeGeneratedVideo(state.result);
+                    signal.throwIfAborted();
                     const nextVideo: GeneratedVideo = {
                         id: nanoid(),
                         url: stored.url,
@@ -340,10 +374,11 @@ export default function VideoPage() {
                 await delay(2500);
             }
         } catch (error) {
+            if (signal.aborted) return;
             const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
             setResults([{ id: log.id, status: "failed", error: errorMessage }]);
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
-            await saveLog({ ...log, status: "failed", durationMs: Date.now() - log.createdAt, error: errorMessage });
+            if (!(error instanceof ServerApiError)) await saveLog({ ...log, status: "failed", durationMs: Date.now() - log.createdAt, error: errorMessage }).catch(reportStorageError);
             message.error(errorMessage);
         } finally {
             activeLogIdsRef.current.delete(log.id);
@@ -501,7 +536,7 @@ export default function VideoPage() {
                 </div>
             </Drawer>
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
-            <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
+            <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload).catch(reportStorageError)} onClose={() => setAssetPickerOpen(false)} />
             <Modal title={t("workbench.deleteLogs")} open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText={t("common.delete")} okButtonProps={{ danger: true }} cancelText={t("common.cancel")}>
                 {t("workbench.deleteLogsConfirm", { count: selectedLogIds.length })}
             </Modal>
@@ -660,15 +695,11 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
 
 async function readStoredLogs() {
     if (typeof window === "undefined") return [];
-    try {
         const logs: GenerationLog[] = [];
         await logStore.iterate<GenerationLog, void>((value) => {
             logs.push(value);
         });
         return (await Promise.all(logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    } catch {
-        return [];
-    }
 }
 
 async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog> {

@@ -9,6 +9,7 @@ import { buildGenerationConfig } from "@/lib/canvas/canvas-generation-helpers";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { ensurePluginsLoaded } from "@/lib/canvas/plugin-loader";
+import { reportStorageError } from "@/stores/use-storage-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import type { CanvasNodeToolbarItem, CanvasPluginAi, CanvasPluginHost } from "@/types/canvas-plugin";
 import type { ReferenceImage } from "@/types/image";
@@ -148,7 +149,7 @@ export function usePluginHost(params: PluginHostParams) {
 
     // Load installed remote plugins on startup.
     useEffect(() => {
-        void ensurePluginsLoaded();
+        void ensurePluginsLoaded().catch(reportStorageError);
     }, []);
 
     return { pluginHost, renderPluginPanel, buildNodeToolbarItems };

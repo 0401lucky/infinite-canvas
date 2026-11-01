@@ -9,20 +9,8 @@ description: 使用 Render 部署无限画布
 
 [部署到 Render](https://render.com/deploy?repo=https://github.com/basketikun/infinite-canvas)
 
-## 部署步骤
+现有一键部署配置尚未适配新增管理员服务与 SQLite/媒体持久化，未设置所需管理员凭据和持久化磁盘，不能按旧流程期待长期保存个人数据。
 
-1. 点击 `Deploy to Render`。
-2. 登录 Render，并按页面提示连接 GitHub。
-3. 确认部署。
+Render 部署需要应用 Web Service、持久化数据目录、`ADMIN_PASSWORD`，以及与分配的 HTTPS 域名一致的 `APP_ORIGIN`。免费实例的临时文件系统不能替代应用数据卷。这部分平台适配不在当前实施范围，也未验证。
 
-部署完成后，打开 Render 分配的 `.onrender.com` 域名即可访问。
-
-## 免费版说明
-
-默认使用 Render 免费 Web Service：
-
-- 空闲约 15 分钟后会休眠，下次访问会自动唤醒。
-- 当前主应用数据默认保存在浏览器本地；第三方提示词由浏览器前端直连拉取。
-- 适合体验和演示，不适合长期保存正式数据。
-
-长期使用建议优先部署到 Vercel，或自行配置 WebDAV 同步浏览器本地数据。
+当前源码请参考 [Docker 部署](/zh-CN/docs/overview/docker)。旧 Vercel 纯静态配置同样不能提供本版的认证与存储服务；WebDAV 是可选备份/同步，不是 SQLite 持久化的替代品。

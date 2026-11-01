@@ -31,6 +31,7 @@ export type CanvasNodeImage = {
     errorDetails?: string;
     content: string;
     storageKey?: string;
+    cleared?: boolean;
     naturalWidth: number;
     naturalHeight: number;
     bytes: number;
@@ -78,6 +79,7 @@ export type CanvasNodeMetadata = {
     images?: CanvasNodeImage[];
     primaryImageId?: string;
     storageKey?: string;
+    cleared?: boolean;
     mimeType?: string;
     bytes?: number;
     durationMs?: number;
@@ -109,6 +111,7 @@ export type CanvasAssistantReference = {
     title: string;
     dataUrl?: string;
     storageKey?: string;
+    cleared?: boolean;
     text?: string;
 };
 

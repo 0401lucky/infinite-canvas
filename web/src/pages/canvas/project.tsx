@@ -2,7 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { ChangeEvent as ReactChangeEvent, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Group, Video } from "lucide-react";
-import { saveAs } from "file-saver";
+import { useDownloadMedia } from "@/hooks/use-download-media";
+import { flushAppStorage } from "@/stores/use-user-store";
+import { serverSessionSignal } from "@/services/api/server";
+import { reportStorageError } from "@/stores/use-storage-store";
 import { useTranslation } from "react-i18next";
 
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
@@ -1798,16 +1801,19 @@ function InfiniteCanvasPage() {
         setNodes((prev) => prev.map((node) => (node.id === nodeId ? applyNodeConfigPatch(node, patch) : node)));
     }, []);
 
+    const downloadMedia = useDownloadMedia();
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
-        saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
-    }, []);
+        const ext = node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : node.metadata.mimeType?.split("/")[1]?.split("+")[0] || imageExtension(node.metadata.content);
+        return downloadMedia({ storageKey: node.metadata.storageKey, url: node.metadata.content }, `canvas-${node.type}-${node.id}.${ext}`);
+    }, [downloadMedia]);
 
     const downloadBatchImage = useCallback((node: CanvasNodeData, imageId: string) => {
         const image = node.metadata?.images?.find((item) => item.id === imageId);
         if (!image?.content) return;
-        saveAs(image.content, `canvas-image-${node.id}-${image.id}.${imageExtension(image.content)}`);
-    }, []);
+        const ext = image.mimeType?.split("/")[1]?.split("+")[0] || imageExtension(image.content);
+        return downloadMedia({ storageKey: image.storageKey, url: image.content }, `canvas-image-${node.id}-${image.id}.${ext}`);
+    }, [downloadMedia]);
 
     const captureVideoNodeFrame = useCallback(
         async (nodeId: string, position: VideoFramePosition) => {
@@ -1845,46 +1851,55 @@ function InfiniteCanvasPage() {
 
     const saveNodeAsset = useCallback(
         async (node: CanvasNodeData) => {
-            if (node.type === CanvasNodeType.Text) {
-                const content = node.metadata?.content?.trim();
-                if (!content) return message.error(t("canvas.projectPage.noTextToSave"));
-                addAsset({ kind: "text", title: node.metadata?.prompt?.slice(0, 24) || t("canvas.projectPage.canvasText"), coverUrl: "", tags: [], source: "Canvas", data: { content }, metadata: { source: "canvas", nodeId: node.id } });
-                message.success(t("common.addedToAssets"));
-                return;
-            }
-            if (node.type === CanvasNodeType.Video) {
-                if (!node.metadata?.content) return message.error(t("canvas.projectPage.noVideoToSave"));
+            const signal = serverSessionSignal();
+            try {
+                if (node.type === CanvasNodeType.Text) {
+                    const content = node.metadata?.content?.trim();
+                    if (!content) return message.error(t("canvas.projectPage.noTextToSave"));
+                    addAsset({ kind: "text", title: node.metadata?.prompt?.slice(0, 24) || t("canvas.projectPage.canvasText"), coverUrl: "", tags: [], source: "Canvas", data: { content }, metadata: { source: "canvas", nodeId: node.id } });
+                    await flushAppStorage();
+                    signal.throwIfAborted();
+                    message.success(t("common.addedToAssets"));
+                    return;
+                }
+                if (node.type === CanvasNodeType.Video) {
+                    if (!node.metadata?.content) return message.error(t("canvas.projectPage.noVideoToSave"));
+                    addAsset({
+                        kind: "video",
+                        title: node.metadata?.prompt?.slice(0, 24) || t("canvas.projectPage.canvasVideo"),
+                        coverUrl: "",
+                        tags: [],
+                        source: "Canvas",
+                        data: { url: node.metadata.content, storageKey: node.metadata.storageKey, width: node.width, height: node.height, bytes: node.metadata.bytes || 0, mimeType: node.metadata.mimeType || "video/mp4" },
+                        metadata: { source: "canvas", nodeId: node.id, prompt: node.metadata?.prompt },
+                    });
+                    await flushAppStorage();
+                    signal.throwIfAborted();
+                    message.success(t("common.addedToAssets"));
+                    return;
+                }
+                if (!node.metadata?.content) return message.error(t("canvas.projectPage.noImageToSave"));
+                const dataUrl = node.metadata.content;
                 addAsset({
-                    kind: "video",
-                    title: node.metadata?.prompt?.slice(0, 24) || t("canvas.projectPage.canvasVideo"),
-                    coverUrl: "",
+                    kind: "image",
+                    title: node.metadata?.prompt?.slice(0, 24) || t("canvas.projectPage.canvasImage"),
+                    coverUrl: node.metadata.content,
                     tags: [],
                     source: "Canvas",
-                    data: { url: node.metadata.content, storageKey: node.metadata.storageKey, width: node.width, height: node.height, bytes: node.metadata.bytes || 0, mimeType: node.metadata.mimeType || "video/mp4" },
+                    data: {
+                        dataUrl,
+                        storageKey: node.metadata.storageKey,
+                        width: node.metadata.naturalWidth || node.width,
+                        height: node.metadata.naturalHeight || node.height,
+                        bytes: node.metadata.bytes || getDataUrlByteSize(dataUrl),
+                        mimeType: node.metadata.mimeType || "image/png",
+                    },
                     metadata: { source: "canvas", nodeId: node.id, prompt: node.metadata?.prompt },
                 });
+                await flushAppStorage();
+                signal.throwIfAborted();
                 message.success(t("common.addedToAssets"));
-                return;
-            }
-            if (!node.metadata?.content) return message.error(t("canvas.projectPage.noImageToSave"));
-            const dataUrl = node.metadata.storageKey ? "" : node.metadata.content;
-            addAsset({
-                kind: "image",
-                title: node.metadata?.prompt?.slice(0, 24) || t("canvas.projectPage.canvasImage"),
-                coverUrl: node.metadata.content,
-                tags: [],
-                source: "Canvas",
-                data: {
-                    dataUrl,
-                    storageKey: node.metadata.storageKey,
-                    width: node.metadata.naturalWidth || node.width,
-                    height: node.metadata.naturalHeight || node.height,
-                    bytes: node.metadata.bytes || getDataUrlByteSize(dataUrl),
-                    mimeType: node.metadata.mimeType || "image/png",
-                },
-                metadata: { source: "canvas", nodeId: node.id, prompt: node.metadata?.prompt },
-            });
-            message.success(t("common.addedToAssets"));
+            } catch (error) { reportStorageError(error); }
         },
         [addAsset, message, t],
     );

@@ -6,6 +6,7 @@ import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/media-size";
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
+import { serverSessionSignal } from "@/services/api/server";
 import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
@@ -31,6 +32,7 @@ export type VideoGenerationTaskState = { status: "pending" } | { status: "comple
 
 /** Results for scripted (plugin) video models, which run their own create+poll in one shot at task creation. */
 const pluginVideoResults = new Map<string, VideoGenerationResult>();
+export const clearVideoTaskResults = () => pluginVideoResults.clear();
 
 function aiApiUrl(config: AiConfig, path: string) {
     return buildApiUrl(config.baseUrl, path);
@@ -44,10 +46,12 @@ function aiHeaders(config: AiConfig, contentType?: string) {
 }
 
 export async function requestVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = [], options?: VideoMediaOptions): Promise<VideoGenerationResult> {
+    options = { ...options, signal: serverSessionSignal(options?.signal) };
     return waitForVideoGenerationTask(config, await createVideoGenerationTask(config, prompt, references, options), options);
 }
 
 export async function waitForVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationResult> {
+    options = { ...options, signal: serverSessionSignal(options?.signal) };
     for (let attempt = 0; attempt < 120; attempt += 1) {
         if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const state = await pollVideoGenerationTask(config, task, options);
@@ -70,6 +74,9 @@ function videoTaskFailed(message: string) {
 }
 
 export async function createVideoGenerationTask(config: AiConfig, prompt: string, references: ReferenceImage[] = [], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    const signal = serverSessionSignal(options?.signal);
+    signal.throwIfAborted();
+    options = { ...options, signal };
     const selectedModel = (config.model || config.videoModel).trim();
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
     const script = resolveModelScript(config, selectedModel);
@@ -80,6 +87,9 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
 }
 
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    const signal = serverSessionSignal(options?.signal);
+    signal.throwIfAborted();
+    options = { ...options, signal };
     if (task.provider === "plugin") {
         const result = pluginVideoResults.get(task.id);
         return result ? { status: "completed", result } : { status: "failed", error: apiText("pluginVideoExpired") };
@@ -118,6 +128,7 @@ async function createPluginVideoTask(config: AiConfig, model: string, script: st
         }),
     );
     const id = nanoid();
+    options?.signal?.throwIfAborted();
     pluginVideoResults.set(id, result);
     return { id, provider: "plugin", model };
 }
@@ -136,13 +147,7 @@ function videoPluginResult(result: unknown): VideoGenerationResult {
 
 export async function storeGeneratedVideo(result: VideoGenerationResult): Promise<UploadedFile> {
     if (result.blob) return uploadMediaFile(result.blob, "video");
-    if (result.url) {
-        try {
-            return await uploadMediaFile(result.url, "video");
-        } catch {
-            return { url: result.url, storageKey: "", bytes: 0, mimeType: result.mimeType || "video/mp4" };
-        }
-    }
+    if (result.url) return uploadMediaFile(result.url, "video");
     throw new Error(apiText("noPlayableVideo"));
 }
 
@@ -303,7 +308,7 @@ async function fileToGeminiInline(file: File): Promise<GeminiInlineData> {
 }
 
 async function referenceMediaToFile(item: { name: string; type?: string; url?: string; storageKey?: string }, fallbackName: string, errorKey: "invalidReferenceVideo" | "invalidReferenceAudio", options?: RequestOptions) {
-    let blob = item.storageKey ? await getMediaBlob(item.storageKey) : null;
+    let blob = item.storageKey ? await getMediaBlob(item.storageKey, options?.signal) : null;
     if (!blob) {
         const url = item.storageKey ? await resolveMediaUrl(item.storageKey, item.url || "") : item.url || "";
         if (!url) throw new Error(apiText(errorKey));

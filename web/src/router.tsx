@@ -1,6 +1,7 @@
 import { createBrowserRouter, Outlet } from "react-router-dom";
 
 import { AnalyticsTracker } from "@/components/layout/analytics-tracker";
+import { captureChannelCredentials } from "@/components/layout/client-root-init";
 import UserLayout from "@/layouts/user-layout";
 import AssetsPage from "@/pages/assets";
 import CanvasPage from "@/pages/canvas";
@@ -11,8 +12,12 @@ import ImagePage from "@/pages/image";
 import NotFound from "@/pages/not-found";
 import PromptsPage from "@/pages/prompts";
 import VideoPage from "@/pages/video";
+import LoginPage from "@/pages/login";
+
+captureChannelCredentials();
 
 export const router = createBrowserRouter([
+    { path: "/login", element: <LoginPage /> },
     {
         element: (
             <UserLayout>

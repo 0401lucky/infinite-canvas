@@ -5,34 +5,52 @@ description: Run Infinite Canvas in a few steps
 
 # Quick Start
 
-To try the project, deploy or start the `web/` frontend.
+The personal edition needs both the Vite frontend in `web/` and the Node.js application service in `server/`. The new authentication and persistence flow still needs [manual acceptance](/docs/progress/pending-test).
 
-## Deploy with Vercel
+## Configure the administrator
 
-Import the repository into Vercel. The root `vercel.json` builds `web/`. AI requests are sent directly from the browser to your OpenAI-compatible endpoint, so no additional application server is required.
+Copy `.env.example` to `.env` and set `ADMIN_PASSWORD` to a strong password. `ADMIN_USERNAME` defaults to `admin`; `APP_ORIGIN` must match the browser's exact origin, including its port. There is no built-in password or registration flow.
 
 ## Run locally
 
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
-cd infinite-canvas/web
+cd infinite-canvas
+cp .env.example .env
+# Set ADMIN_PASSWORD before starting the service.
+```
+
+Use Node.js 24 or newer and start the API in one terminal:
+
+```bash
+cd server
+npm ci
+npm run dev
+```
+
+From the repository root, start the frontend in another terminal:
+
+```bash
+cd web
 bun install
 bun run dev
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000` and sign in. Vite proxies `/api` to the local service, whose default port is `3001`. Stopping the service does not enable browser-storage fallback.
 
 ## Run with Docker
 
 ```bash
-docker build -t infinite-canvas .
-docker run --rm -p 3000:3000 infinite-canvas
+docker compose -f docker-compose.local.yml up -d --build
 ```
+
+Configure `.env` first. Compose mounts the full application data directory. See [Docker deployment](/docs/overview/docker) before updating containers or changing the public origin; published images may not yet contain these Unreleased changes.
 
 ## First-time setup
 
-- Open Settings and enter your `Base URL`, `API Key`, and model names.
-- Open `/prompts` to fetch prompt repositories directly from the browser and cache them in IndexedDB.
-- Configure WebDAV if you want to synchronize canvases, assets, and generation history across devices.
+- Sign in, then open Settings and enter your `Base URL`, `API Key`, and model names.
+- Prompt repositories are fetched directly by the browser; their cache is stored through the application service.
+- Settings provides server-space statistics and irreversible cleanup of all saved image originals and thumbnails.
+- WebDAV remains an optional, manually configured backup/sync destination. It does not automatically restore cleared image keys.
 
-Canvas projects and My Assets are primarily stored in the browser. The API key is also stored locally and used by the browser to call OpenAI-compatible endpoints directly.
+Configuration and business records live in SQLite; media lives in private server directories. Old browser databases are not migrated or deleted. Signed-in browsers still receive API keys to call AI providers directly. The old Vercel static-only configuration cannot provide this edition's authentication or persistent SQLite; platform adaptation is not included.

@@ -7,3 +7,18 @@ services:
     ports:
       - "3000:3000"
     restart: unless-stopped
+    environment:
+      PORT: "3000"
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      DATA_DIR: /app/data
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-7}
+      MAX_UPLOAD_MIB: ${MAX_UPLOAD_MIB:-512}
+      MAX_JSON_MIB: ${MAX_JSON_MIB:-32}
+      ANALYTICS_GA4_ID: ${ANALYTICS_GA4_ID:-}
+      ANALYTICS_BAIDU_ID: ${ANALYTICS_BAIDU_ID:-}
+    volumes:
+      - app-data:/app/data
+volumes:
+  app-data:

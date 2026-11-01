@@ -8,6 +8,10 @@ docs/node_modules
 docs/out
 web/.next
 web/node_modules
+server/node_modules
+.trellis
+.agents
+.codex
 web/out
 *.log
 .env*
