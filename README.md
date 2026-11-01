@@ -155,12 +155,15 @@ bun run dev
 ### Docker 运行
 
 ```bash
-git clone git@github.com:basketikun/infinite-canvas.git
+git clone git@github.com:0401lucky/infinite-canvas.git
 cd infinite-canvas
 cp .env.example .env
 # 填写 ADMIN_PASSWORD；远程部署还须修改 APP_ORIGIN
-docker compose -f docker-compose.local.yml up -d --build
+docker compose pull
+docker compose up -d
 ```
+
+Compose 使用本仓库 Actions 发布的 `ghcr.io/0401lucky/infinite-canvas:latest`；先确认镜像构建成功，私有包需登录 GHCR 后拉取。本地构建与发布说明见 [Docker 部署](docs/content/docs/overview/docker.zh-CN.mdx)。
 
 运行后默认端口3000，可访问 `http://localhost:3000`。
 

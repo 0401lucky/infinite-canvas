@@ -2,7 +2,12 @@ name: Docker image
 
 on:
   push:
+    branches: ["main"]
     tags: ["v*"]
+    paths-ignore:
+      - ".agents/**"
+      - ".codex/**"
+      - ".trellis/**"
   workflow_dispatch:
 
 permissions:
@@ -10,7 +15,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/basketikun/infinite-canvas
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
   meta:
@@ -24,6 +29,8 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=branch
             type=ref,event=tag
             type=sha,prefix=
 
@@ -113,3 +120,4 @@ jobs:
           done < <(find "$RUNNER_TEMP/digests" -type f -printf '%f\n' | sort)
 
           docker buildx imagetools create "${tag_args[@]}" "${digest_args[@]}"
+          docker buildx imagetools inspect "${tag_args[1]}"

@@ -2,7 +2,7 @@
 
 ## 1. Scope / Trigger
 
-Applies to `server/`, the same-origin browser API/record adapters, auth hydration, media consumers, and Docker/env wiring. Read this before changing authentication, records, media identity, cleanup, or deployment. Node 24 + Express 5 + better-sqlite3 + Argon2id + multer + Zod own standard parsing/storage/security primitives.
+Applies to `server/`, the same-origin browser API/record adapters, auth hydration, media consumers, Docker/env wiring, `.github/workflows/docker-image.yml`, and the root Compose image. Read this before changing authentication, records, media identity, cleanup, or deployment. Node 24 + Express 5 + better-sqlite3 + Argon2id + multer + Zod own standard parsing/storage/security primitives.
 
 This is one self-hosted administrator, not registration, roles, credits, an AI gateway, or hosted cloud sync. The optional local Agent/proxy keep independent protocols and history; all-image cleanup must never touch local Agent storage. Runtime acceptance is pending, and checks/builds/commits require explicit user instruction.
 
@@ -30,6 +30,15 @@ This is one self-hosted administrator, not registration, roles, credits, an AI g
 | `DELETE /api/storage/images` | All saved image originals/previews, including references |
 
 All business/media routes require a valid session, including resource misses. Public `/health` returns only `{ ok: true }`; public `/config.js` contains only analytics IDs. Static SPA/plugin assets are public, private files are not.
+
+### Image Publication
+
+| Trigger/command | Contract |
+| --- | --- |
+| Push `refs/heads/main` | Publish `latest`, `main`, and short-SHA tags; skip pushes changing only `.agents/**`, `.codex/**`, or `.trellis/**`, which are excluded from Docker context |
+| Push `refs/tags/v*` | Preserve version/`latest` and short-SHA metadata tags |
+| `workflow_dispatch` | Build the selected ref with its branch/tag metadata; no automatic extra dispatch after a push |
+| `docker compose pull` then `docker compose up -d` | Pull `ghcr.io/0401lucky/infinite-canvas:latest` here and keep the same persistent volume |
 
 ### Database and Browser Owners
 
@@ -99,7 +108,9 @@ Explicit ZIP imports containing originals allocate new keys and remap nested key
 | `MAX_JSON_MIB` | Approved 32 per JSON request; positive integer |
 | `ANALYTICS_GA4_ID`, `ANALYTICS_BAIDU_ID` | Optional public IDs only |
 
-Do not add IP rate limiting, account lockout, CAPTCHA, timeout/retry/concurrency/size boundaries or substitutes without explicit approval. Vite proxies only `/api` to the configured API port and limits filesystem serving to `web/`. Server scripts read root `.env`. Docker runs as `node` and mounts the complete `/app/data` directory, including SQLite associated files and media. Never delete the volume during ordinary updates. Docker/native dependencies/routes/permissions remain unverified; static-only Render/Vercel setups are not adapted.
+Do not add IP rate limiting, account lockout, CAPTCHA, timeout/retry/concurrency/size boundaries or substitutes without explicit approval. Vite proxies only `/api` to the configured API port and limits filesystem serving to `web/`. Server scripts read root `.env`. Docker runs as `node` and mounts the complete `/app/data` directory, including SQLite associated files and media. Never delete the volume during ordinary updates. Container startup, native-module loading, routes, and volume permissions remain unverified; static-only Render/Vercel setups are not adapted.
+
+The application workflow sets `IMAGE_NAME: ghcr.io/${{ github.repository }}` and authenticates with `secrets.GITHUB_TOKEN` under `contents: read` / `packages: write`; do not hardcode the upstream owner's package or add a personal token. Keep the existing native amd64/arm64 matrix, per-architecture digest pushes, and merge only after both builds succeed. New packages may be private: pull requires explicit public visibility or GHCR authentication, not disabled application auth. The workflow does not alter package visibility or the docs/Pages/plugin workflows. Cloud building/pushing still requires explicit user authorization.
 
 SQLite API/WebDAV credentials are not encrypted by the administrator password hash. Authenticated browsers and trusted page plugins can read keys; databases, env files, and backups require sensitive-data protection.
 
@@ -120,6 +131,8 @@ SQLite API/WebDAV credentials are not encrypted by the administrator password ha
 | Partial image filesystem deletion | 500 `IMAGE_CLEANUP_FAILED` | Report incomplete cleanup; count remaining bytes |
 | Unexpected storage error | 500 `STORAGE_FAILED` | Safe response; no credentials, raw SQL, or paths |
 | Invalid env / first start without password / DATA_DIR under web | Startup failure | Do not start a weak/public storage service |
+| Either architecture build or digest upload fails | Actions failure; merge skipped | Do not claim a combined image was published or update tags with a partial architecture set |
+| GHCR publication denied / private package pull denied | Actions failure / registry authentication error | Do not fall back to the upstream package; fix package access or sign in explicitly |
 
 Client `ServerApiError` preserves status/code/message; unreachable/malformed server response is `SERVER_UNAVAILABLE`, not anonymous/empty success. Abort stays cancellation, not a provider-source cache failure.
 
@@ -131,6 +144,8 @@ Client `ServerApiError` preserves status/code/message; unreachable/malformed ser
 - Bad: an old session finishes source/plugin/media work after a new login, fetches the new session signal, and writes old data or activates old plugins.
 - Bad conflict: read history at revision R, fetch a newer revision R+1, then replace with the stale history using R+1.
 - Bad backup: missing original becomes a URL fallback or a silently incomplete successful ZIP; storage failure becomes successful browser-local persistence.
+- Good publication: an authorized `main` push publishes both architectures to the current repository's package; a later tooling-only journal commit does not build again.
+- Bad publication: a fork keeps the upstream `IMAGE_NAME`, or treats a successful container build as proof that authenticated runtime and volume persistence passed.
 
 ## 6. Tests Required
 
@@ -143,8 +158,21 @@ These are assertion points for user-authorized validation, not checks already ru
 5. Cleanup: referenced originals/previews and orphaned managed image files are removed; account/config/text/video/audio/Agent history survive; forced partial deletion fails visibly and leftover bytes remain counted. Old writes/uploads/WebDAV cannot revive tombstones.
 6. ZIP: cleared state exports without files or old URLs; missing non-cleared originals fail export; missing declared files fail import; explicit originals receive new keys and nested/cover/reference remapping, including repeated keys and cleared-only packages.
 7. Deployment/limits: strong first-start credentials, Node native dependencies, non-root writable volume, SQLite associated files across restart/update, SPA/plugin/config/media routes, exact HTTPS origin/Secure cookie, approved 7-day/512 MiB/32 MiB defaults, and no login throttling or unapproved limits.
+8. Image publication: the run's `headSha` matches the pushed commit, both architecture jobs and merge succeed, and `latest`/`main`/short-SHA resolve to the same combined digest containing linux/amd64 and linux/arm64. Version-tag/manual behavior and tooling-only skip remain assertion points; do not create a release tag just to test them. Build success does not replace item 7.
 
 ## 7. Wrong vs Correct
+
+Wrong in this fork:
+
+```yaml
+IMAGE_NAME: ghcr.io/basketikun/infinite-canvas
+```
+
+Correct: publish to the repository whose workflow token owns the package.
+
+```yaml
+IMAGE_NAME: ghcr.io/${{ github.repository }}
+```
 
 Wrong: use an empty display URL as proof that a persisted image is absent, or revive it from stale content.
 

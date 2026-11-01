@@ -13,7 +13,7 @@ Scope: `server/`, `canvas-agent/`, and `canvas-proxy/`. `server/` is the require
 
 | Guide | Scope |
 | --- | --- |
-| [Application server](application-server.md) | Auth, SQL/API/env contracts, media, cleanup, Docker |
+| [Application server](application-server.md) | Auth, SQL/API/env contracts, media, cleanup, Docker/GHCR publication |
 | [Directory structure](directory-structure.md) | Agent adapters, HTTP, MCP, proxy |
 | [File storage](file-storage.md) | Independent local Agent configuration, metadata, Skills |
 | [Errors](error-handling.md) | Validation and surfaced failures |

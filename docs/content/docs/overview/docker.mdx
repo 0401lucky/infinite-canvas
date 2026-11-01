@@ -5,7 +5,7 @@ description: Deploy Infinite Canvas with Docker Compose
 
 # Docker Deployment
 
-The main image now runs a Node.js 24 application service that serves both authenticated APIs and the Vite frontend. This Unreleased deployment flow still needs manual verification; build locally when evaluating it rather than assuming `latest` already contains the changes.
+The main image now runs a Node.js 24 application service that serves both authenticated APIs and the Vite frontend. Runtime deployment still needs manual verification. Before pulling the published image, confirm that the repository's **Docker image** Actions run succeeded for the source you want to deploy.
 
 ## Configure first
 
@@ -14,10 +14,11 @@ Copy `.env.example` to `.env` and set a strong `ADMIN_PASSWORD`. For a remote de
 ## Use the published image
 
 ```bash
-git clone git@github.com:basketikun/infinite-canvas.git
+git clone git@github.com:0401lucky/infinite-canvas.git
 cd infinite-canvas
 cp .env.example .env
 # Set ADMIN_PASSWORD and APP_ORIGIN before starting.
+docker compose pull
 docker compose up -d
 ```
 
@@ -28,6 +29,12 @@ Open `http://localhost:3000`.
 ```bash
 docker compose -f docker-compose.local.yml up -d --build
 ```
+
+## Image publishing
+
+`.github/workflows/docker-image.yml` publishes the application to the current repository's GHCR package, `ghcr.io/0401lucky/infinite-canvas` here. A push to `main` builds `linux/amd64` and `linux/arm64`, then combines their digests into `latest`, `main`, and short-commit tags. Version tags matching `v*` and manual runs remain available; version tags retain their existing version/`latest` tagging behavior. Pushes changing only `.agents/`, `.codex/`, or `.trellis/` do not rebuild the image.
+
+Publishing uses the workflow's `GITHUB_TOKEN` with `packages: write`; no personal token secret is needed. New GHCR packages may be private: make the package public for unauthenticated pulls, or sign in to GHCR before pulling it. The workflow does not change package visibility. Compose uses `latest`; change its image tag to the short commit or a version tag when you need a specific build. Keep the data volume during updates.
 
 ## Documentation image
 

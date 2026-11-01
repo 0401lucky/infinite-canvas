@@ -5,7 +5,7 @@ description: 使用 Docker Compose 部署无限画布
 
 # Docker 部署
 
-主应用镜像现在使用 Node.js 24 应用服务，同时提供认证 API 和 Vite 静态前端。这些 Unreleased 部署改动仍需人工验证；验收时应从当前源码本地构建，不要假设 `latest` 已包含改动。
+主应用镜像现在使用 Node.js 24 应用服务，同时提供认证 API 和 Vite 静态前端。运行部署仍需人工验证；拉取发布镜像前，先确认本仓库对应源码的 **Docker image** Actions 运行成功。
 
 ## 先配置管理员
 
@@ -14,10 +14,11 @@ description: 使用 Docker Compose 部署无限画布
 ## 使用发布镜像
 
 ```bash
-git clone git@github.com:basketikun/infinite-canvas.git
+git clone git@github.com:0401lucky/infinite-canvas.git
 cd infinite-canvas
 cp .env.example .env
 # 启动前填写 ADMIN_PASSWORD 和 APP_ORIGIN
+docker compose pull
 docker compose up -d
 ```
 
@@ -34,6 +35,12 @@ http://localhost:3000
 ```bash
 docker compose -f docker-compose.local.yml up -d --build
 ```
+
+## 镜像发布
+
+`.github/workflows/docker-image.yml` 将应用发布到当前仓库的 GHCR，本仓库为 `ghcr.io/0401lucky/infinite-canvas`。推送 `main` 时构建 `linux/amd64` 和 `linux/arm64`，成功后合并 digest，发布 `latest`、`main` 与短提交号标签。保留 `v*` 版本 tag 和手动运行；版本 tag 继续生成原有的版本/`latest` 标签。仅修改 `.agents/`、`.codex/` 或 `.trellis/` 的提交不重复构建镜像。
+
+发布使用工作流的 `GITHUB_TOKEN` 和 `packages: write` 权限，不需要额外个人 Token Secret。首次发布的 GHCR 包可能为私有：免登录拉取需要把包设为公开，否则须先登录 GHCR。工作流不会自动改变包可见性。Compose 默认使用 `latest`；需要固定构建时，将镜像标签改为短提交号或版本 tag。更新仍须保留数据卷。
 
 ## 文档站镜像
 
