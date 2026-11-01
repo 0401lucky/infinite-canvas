@@ -119,4 +119,11 @@
 - [x] 用户确认追加应用镜像的 `main` 自动构建、当前仓库 GHCR 发布与提交推送，允许本次云端构建；不改文档站镜像工作流或执行本地检查。
 - [x] 最小修改应用工作流与 Compose，保留版本 tag、手动触发、双架构构建、digest 合并及数据卷；排除仅开发工具记录变更的重复构建。
 - [x] 同步 Docker 部署、README 快速开始、待测试、Unreleased 与应用服务 specs；核对 TODO 无需调整，完成源文件/diff 审阅。
-- [ ] 提交推送后核对云端任务与镜像标签/架构，记录实际结果；未运行的部署验收仍待用户确认，不归档任务。
+- [x] 提交推送后核对云端任务与镜像标签/架构，记录实际结果；未运行的部署验收仍待用户确认，不归档任务。
+
+### 云端发布结果
+
+- 工作提交 `4f3a51e` 已正常推送到 `origin/main`，自动 `push` 事件触发 [Docker image 运行 41283089509](https://github.com/0401lucky/infinite-canvas/actions/runs/41283089509)；meta、amd64、arm64 和 merge 全部成功，未另行手动派发。
+- `ghcr.io/0401lucky/infinite-canvas` 的 `latest`、`main`、`4f3a51e` 均发布为 `sha256:6fcac0545874cc4ec71db1d1968dee8b6951c8f9bc4a076d6add51aac2de722a`；云端回读 manifest 包含 `linux/amd64` 与 `linux/arm64`。
+- 匿名读取 `latest` 镜像清单返回相同 digest，可匿名访问清单；没有自动修改包可见性，也没有拉取完整镜像或启动本地容器。
+- 本次仅执行用户授权的云端镜像构建及发布核对；未运行本地语法/类型检查、lint、测试或构建，未验收容器启动、登录、数据卷与浏览器交互。版本 tag/手动运行仅按源文件核对保留，未创建 tag 或修改 VERSION；任务仍为 `in_progress`。

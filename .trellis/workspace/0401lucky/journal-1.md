@@ -110,3 +110,40 @@ The user explicitly requested a normal push to origin/main and confirmed includi
 ### Next Steps
 
 - Keep admin-server-storage in_progress and unarchived until user manual acceptance using pending-test; do not promote formal features or infer permission for executable checks.
+
+
+## Session 4: Publish main application image through GitHub Actions
+<!-- trellis-session: v=2 fp=5048228df9628c2d -->
+
+**Date**: 2026-11-01
+**Task**: Publish main application image through GitHub Actions
+**Branch**: `main`
+
+### Summary
+
+User explicitly authorized adapting and pushing the application image workflow. Commit 4f3a51e triggered push run 41283089509, which successfully built amd64/arm64 and published the combined GHCR image. Cloud manifest readback and anonymous latest metadata access matched the published digest. Application runtime acceptance remains pending.
+
+### Main Changes
+
+- Enabled main pushes to publish latest/main/short-SHA to the current repository GHCR while retaining version tags/manual runs and the existing native dual-architecture/digest workflow.
+- Aligned Compose and bilingual Docker/README/pending-test documentation, Unreleased, planning artifacts, and executable server specs; tooling-only record commits skip redundant image builds.
+- Published ghcr.io/0401lucky/infinite-canvas tags latest/main/4f3a51e with digest sha256:6fcac0545874cc4ec71db1d1968dee8b6951c8f9bc4a076d6add51aac2de722a. No package visibility changes, personal token secrets, release tags, or VERSION changes.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4f3a51e75760d963868301b348d7136eccb2a1cf` | ci(docker): publish main images to repository GHCR |
+
+### Testing
+
+- [OK] Authorized GitHub Actions run 41283089509: meta, amd64, arm64, and merge succeeded; the published index readback contains linux/amd64 and linux/arm64.
+- Not run: local syntax/lint/type checks, tests, builds, container startup, or browser/runtime acceptance. Version-tag/manual execution remains untested.
+
+### Status
+
+**In Progress** - application image published; runtime acceptance remains pending.
+
+### Next Steps
+
+- Keep admin-server-storage in_progress and unarchived; user can deploy the published image with explicit administrator credentials and validate login, media, and persistent-volume behavior using pending-test.
