@@ -9,6 +9,8 @@ const sharedConfig = z.object({
     apiFormat: apiFormat.default("openai"),
     channels: z.array(z.object({
         id: z.string(), name: z.string(), baseUrl: z.string(), apiKey: z.string(), apiFormat,
+        apiKeyMode: z.enum(["single", "round-robin", "random"]).optional(),
+        apiKeys: z.array(z.object({ id: z.string().min(1), value: z.string() })).optional(),
         models: z.array(z.object({ name: z.string(), capability: z.enum(["image", "video", "text", "audio"]), script: z.string().optional() })),
     })).default([]),
     models: z.array(z.string()).default([]),

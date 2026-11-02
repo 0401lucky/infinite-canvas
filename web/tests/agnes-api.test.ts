@@ -19,9 +19,9 @@ afterAll(() => {
     else Reflect.deleteProperty(globalThis, "localStorage");
 });
 
-const { AGNES_BASE_URL, AGNES_FLASH_MODELS, createModelChannel, defaultConfig, encodeChannelModel, modelOptionsFromChannels, resolveModelRequestConfig, useConfigStore } = await import("../src/stores/use-config-store");
+const { AGNES_BASE_URL, AGNES_FLASH_MODELS, createModelChannel, defaultConfig, encodeChannelModel, modelOptionsFromChannels, normalizeChannelApiKeys, resolveModelRequestConfig, useConfigStore } = await import("../src/stores/use-config-store");
 const { agnesUsesChat, agnesVideoQueryUrl, agnesVideoTaskId, agnesVideoTaskState, buildAgnesChatBody, buildAgnesImageBody, buildAgnesVideoBody } = await import("../src/services/api/agnes");
-const { requestGeneration, requestImageQuestion } = await import("../src/services/api/image");
+const { fetchChannelModels, requestGeneration, requestImageQuestion } = await import("../src/services/api/image");
 const { createVideoGenerationTask, pollVideoGenerationTask, storeGeneratedVideo } = await import("../src/services/api/video");
 const { resetServerSession, serverSessionSignal } = await import("../src/services/api/server");
 const { default: i18n } = await import("../src/i18n");
@@ -45,6 +45,11 @@ function sharedConfigFor(): SharedApiConfig {
         baseUrl: AGNES_BASE_URL, apiKey: "shared-test-key", apiFormat: "agnes", channels, models, model,
         imageModel: encodeChannelModel("selected", "agnes-image-2.5-flash"), videoModel: encodeChannelModel("selected", "agnes-video-2.5-flash"), textModel: model, audioModel: "",
     };
+}
+function poolConfigFor(model: string, mode: "round-robin" | "random" = "round-robin"): AiConfig {
+    const config = configFor(model);
+    config.channels[0] = { ...config.channels[0], apiKeyMode: mode, apiKeys: [{ id: "key-a", value: "pool-secret-a" }, { id: "key-b", value: "pool-secret-b" }] };
+    return config;
 }
 const reply = (data: unknown) => ({ data } as AxiosResponse);
 const vision: AiTextMessage[] = [
@@ -295,4 +300,126 @@ test("ending a session stops further stream callbacks and old-session media writ
     resetServerSession("other-user");
     await expect(storeGeneratedVideo({ blob: new Blob(["old video"], { type: "video/mp4" }) }, { signal })).rejects.toThrow();
     expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+test("image batches rotate per submission while previews and model discovery do not advance rotation", async () => {
+    const config = poolConfigFor("agnes-image-2.5-flash");
+    const get = spyOn(axios, "get").mockResolvedValue(reply({ data: [{ id: "agnes-image-2.5-flash" }] }));
+    const post = spyOn(axios, "post").mockResolvedValue(reply({ data: [{ b64_json: "image" }] }));
+    await fetchChannelModels(config.channels[0]);
+    expect(get.mock.calls[0][1]?.headers?.Authorization).toBe("Bearer pool-secret-a");
+    resolveModelRequestConfig(config, config.model);
+    expect(useConfigStore.getState().isAiConfigReady(config, config.model)).toBe(true);
+    await requestGeneration({ ...config, count: "3" }, "A cat");
+    expect(post.mock.calls.map(([, , options]) => options?.headers?.Authorization)).toEqual(["Bearer pool-secret-a", "Bearer pool-secret-b", "Bearer pool-secret-a"]);
+    resetServerSession("another-account");
+    await requestGeneration(config, "Another cat");
+    expect(post.mock.calls[3][2]?.headers?.Authorization).toBe("Bearer pool-secret-a");
+});
+
+test("random mode chooses from the pool for each independent image", async () => {
+    const config = poolConfigFor("agnes-image-2.5-flash", "random");
+    spyOn(Math, "random").mockReturnValueOnce(0.99).mockReturnValueOnce(0);
+    const post = spyOn(axios, "post").mockResolvedValue(reply({ data: [{ b64_json: "image" }] }));
+    await requestGeneration({ ...config, count: "2" }, "A cat");
+    expect(post.mock.calls.map(([, , options]) => options?.headers?.Authorization)).toEqual(["Bearer pool-secret-b", "Bearer pool-secret-a"]);
+});
+
+test("text and vision use the same channel rotation", async () => {
+    const config = poolConfigFor("agnes-2.5-flash");
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(async (url) => String(url).endsWith("/chat/completions") ? sse(chatEvents) : sse('data: {"type":"response.output_text.delta","delta":"OK"}\n\n'));
+    await requestImageQuestion(config, [{ role: "user", content: "Text" }], () => {});
+    await requestImageQuestion(config, vision, () => {});
+    expect(fetch.mock.calls.map(([, init]) => new Headers(init?.headers).get("Authorization"))).toEqual(["Bearer pool-secret-a", "Bearer pool-secret-b"]);
+});
+
+test("custom scripts receive one selected key per execution", async () => {
+    const config = poolConfigFor("agnes-2.5-flash");
+    config.channels[0].models = [{ name: "agnes-2.5-flash", capability: "text", script: "return apiKey;" }];
+    expect(await requestImageQuestion(config, [], () => {})).toBe("pool-secret-a");
+    expect(await requestImageQuestion(config, [], () => {})).toBe("pool-secret-b");
+});
+
+test("video tasks serialize only the key ID and keep their submission key after reordering or mode changes", async () => {
+    const config = poolConfigFor("agnes-video-2.5-flash");
+    const post = spyOn(axios, "post").mockResolvedValue(reply({ video_id: "video-id" }));
+    const get = spyOn(axios, "get").mockResolvedValue(reply({ status: "queued" }));
+    const first = await createVideoGenerationTask(config, "First");
+    const second = await createVideoGenerationTask(config, "Second");
+    expect([first.apiKeyId, second.apiKeyId]).toEqual(["key-a", "key-b"]);
+    expect(JSON.stringify([first, second])).not.toContain("pool-secret");
+    const restored = JSON.parse(JSON.stringify(first)) as VideoGenerationTask;
+    const changed: AiConfig = { ...config, channels: [{ ...config.channels[0], apiKeyMode: "single", apiKey: "different-single-key", apiKeys: [...config.channels[0].apiKeys!].reverse() }] };
+    await pollVideoGenerationTask(changed, restored);
+    await pollVideoGenerationTask(changed, second);
+    await pollVideoGenerationTask(changed, restored);
+    expect(get.mock.calls.map(([, options]) => options?.headers?.Authorization)).toEqual(["Bearer pool-secret-a", "Bearer pool-secret-b", "Bearer pool-secret-a"]);
+    await createVideoGenerationTask(config, "Third");
+    expect(post.mock.calls.map(([, , options]) => options?.headers?.Authorization)).toEqual(["Bearer pool-secret-a", "Bearer pool-secret-b", "Bearer pool-secret-a"]);
+});
+
+test("removing or editing a task key blocks polling instead of selecting another key", async () => {
+    const config = poolConfigFor("agnes-video-2.5-flash");
+    spyOn(axios, "post").mockResolvedValue(reply({ video_id: "video-id" }));
+    const get = spyOn(axios, "get").mockResolvedValue(reply({ status: "queued" }));
+    const task = await createVideoGenerationTask(config, "A cat");
+    const previous = config.channels[0].apiKeys!;
+    config.channels[0].apiKeys = normalizeChannelApiKeys([{ ...previous[0], value: "replacement-key" }, previous[1]], previous);
+    await expect(pollVideoGenerationTask(config, task)).rejects.toThrow(i18n.t("apiErrors.agnesTaskKeyMissing"));
+    expect(get).not.toHaveBeenCalled();
+});
+
+test("key normalization retains identities for unchanged keys and removes empty or duplicate entries", () => {
+    const original = [{ id: "key-a", value: "pool-secret-a" }, { id: "key-b", value: "pool-secret-b" }];
+    const saved = normalizeChannelApiKeys([{ ...original[0], value: " pool-secret-a " }, { id: "duplicate", value: "pool-secret-a" }, { id: "empty", value: " " }, { ...original[1], value: "changed-key" }], original);
+    expect(saved).toHaveLength(2);
+    expect(saved[0]).toEqual(original[0]);
+    expect(saved[1].id).not.toBe("key-b");
+    expect(createModelChannel({ apiFormat: "agnes", apiKeyMode: "round-robin", apiKeys: saved }).apiKeys).toEqual(saved);
+});
+
+test("members inherit the pool and strategy without persisting shared keys privately", () => {
+    const sharedApiConfig = { ...sharedConfigFor(), channels: poolConfigFor("agnes-2.5-flash").channels };
+    const options = useConfigStore.persist.getOptions();
+    const restored = options.merge!(null, { ...useConfigStore.getState(), sharedApiConfig });
+    expect(restored.config.channels[0].apiKeyMode).toBe("round-robin");
+    expect(restored.config.channels[0].apiKeys).toEqual(sharedApiConfig.channels[0].apiKeys);
+    expect(JSON.stringify(options.partialize!(restored))).not.toContain("pool-secret");
+    useConfigStore.setState(restored);
+    useConfigStore.getState().updateConfig("channels", []);
+    expect(useConfigStore.getState().config.channels).toEqual(sharedApiConfig.channels);
+});
+
+test("an empty enabled pool cannot fall back to the single key or send a request", async () => {
+    const config = poolConfigFor("agnes-image-2.5-flash");
+    config.channels[0].apiKeys = [];
+    const post = spyOn(axios, "post").mockResolvedValue(reply({ data: [{ b64_json: "must-not-send" }] }));
+    expect(useConfigStore.getState().isAiConfigReady(config, config.model)).toBe(false);
+    await expect(requestGeneration(config, "A cat")).rejects.toThrow(i18n.t("apiErrors.apiKeyRequired"));
+    expect(post).not.toHaveBeenCalled();
+});
+
+test("other protocols keep their single key and channel rotations stay independent", () => {
+    const config = poolConfigFor("agnes-2.5-flash");
+    const another = { ...config.channels[0], id: "another" };
+    config.channels.push(another);
+    const select = (value: string) => resolveModelRequestConfig(config, value, { rotateApiKey: true }).apiKey;
+    expect(select(config.model)).toBe("pool-secret-a");
+    expect(select(encodeChannelModel("another", "agnes-2.5-flash"))).toBe("pool-secret-a");
+    expect(select(config.model)).toBe("pool-secret-b");
+    for (const apiFormat of ["openai", "gemini"] as const) {
+        const other = { ...config, channels: [{ ...config.channels[0], apiFormat }] };
+        expect(resolveModelRequestConfig(other, config.model, { rotateApiKey: true }).apiKey).toBe("test-key");
+    }
+});
+
+test("URL credential updates replace the pool's first key without reusing its task identity", () => {
+    const config = poolConfigFor("agnes-2.5-flash");
+    useConfigStore.setState({ config });
+    useConfigStore.getState().importChannelCredentials({ baseUrl: AGNES_BASE_URL, apiKey: "updated-first-key" });
+    const channel = useConfigStore.getState().config.channels[0];
+    expect(channel.apiKeyMode).toBe("round-robin");
+    expect(channel.apiKeys?.map((key) => key.value)).toEqual(["updated-first-key", "pool-secret-b"]);
+    expect(channel.apiKeys?.[0].id).not.toBe("key-a");
+    expect(channel.apiKeys?.[1].id).toBe("key-b");
 });

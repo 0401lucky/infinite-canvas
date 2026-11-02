@@ -1,9 +1,10 @@
 import { Button, Drawer, Input, Segmented, Select, Space } from "antd";
-import { ListPlus, Trash2 } from "lucide-react";
+import { ListPlus, Plus, Trash2 } from "lucide-react";
+import { nanoid } from "nanoid";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { AGNES_BASE_URL, AGNES_FLASH_MODELS, defaultBaseUrlForApiFormat, guessCapability, normalizeChannelModels, type ApiCallFormat, type ChannelModel, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { AGNES_BASE_URL, AGNES_FLASH_MODELS, defaultBaseUrlForApiFormat, guessCapability, normalizeChannelApiKeys, normalizeChannelModels, type ApiCallFormat, type ApiKeyMode, type ChannelModel, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 import { ModelScriptEditor } from "./model-script-editor";
 import { ModelSelectModal } from "./model-select-modal";
 
@@ -27,6 +28,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
 
     if (!draft) return null;
 
+    const multipleKeys = draft.apiFormat === "agnes" && (draft.apiKeyMode === "round-robin" || draft.apiKeyMode === "random");
     const patch = (value: Partial<ModelChannel>) => setDraft((current) => (current ? { ...current, ...value } : current));
     const setModels = (models: ChannelModel[]) => patch({ models });
 
@@ -46,7 +48,8 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     const removeModel = (name: string) => setModels(draft.models.filter((model) => model.name !== name));
 
     const save = () => {
-        onSave({ ...draft, name: draft.name.trim() || t("config.channels.unnamed"), models: normalizeChannelModels(draft.models) });
+        const apiKeys = normalizeChannelApiKeys(draft.apiKeys || [], channel?.apiKeys || []);
+        onSave({ ...draft, apiKeys, apiKey: multipleKeys ? apiKeys[0]?.value || "" : draft.apiKey, name: draft.name.trim() || t("config.channels.unnamed"), models: normalizeChannelModels(draft.models) });
         onClose();
     };
 
@@ -79,10 +82,24 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     <span className="mb-1 block text-sm font-medium">{t("config.channelEditor.baseUrl")}</span>
                     <Input value={draft.baseUrl} readOnly={draft.apiFormat === "agnes"} onChange={(event) => patch({ baseUrl: event.target.value })} placeholder="https://api.example.com" />
                 </label>
-                <label className="block md:col-span-2">
+                {draft.apiFormat === "agnes" ? <div className="md:col-span-2">
+                    <span className="mb-1 block text-sm font-medium">{t("config.channelEditor.keyMode")}</span>
+                    <Segmented block value={draft.apiKeyMode || "single"} options={(["single", "round-robin", "random"] as const).map((value) => ({ value, label: t(`config.channelEditor.keyModes.${value}`) }))} onChange={(value) => patch({ apiKeyMode: value as ApiKeyMode, apiKeys: draft.apiKeys?.length ? draft.apiKeys : [{ id: nanoid(), value: draft.apiKey }] })} />
+                </div> : null}
+                {multipleKeys ? <div className="space-y-2 md:col-span-2">
+                    <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium">API Keys</span>
+                        <Button type="text" size="small" icon={<Plus className="size-3.5" />} onClick={() => patch({ apiKeys: [...(draft.apiKeys || []), { id: nanoid(), value: "" }] })}>{t("config.channelEditor.addKey")}</Button>
+                    </div>
+                    {(draft.apiKeys || []).map((item, index) => <div key={item.id} className="flex items-center gap-2">
+                        <Input.Password aria-label={`API Key ${index + 1}`} value={item.value} placeholder={`API Key ${index + 1}`} onChange={(event) => patch({ apiKeys: draft.apiKeys?.map((key) => key.id === item.id ? { ...key, value: event.target.value } : key) })} />
+                        <Button type="text" danger aria-label={t("config.channelEditor.removeKey", { index: index + 1 })} icon={<Trash2 className="size-4" />} onClick={() => patch({ apiKeys: draft.apiKeys?.filter((key) => key.id !== item.id) })} />
+                    </div>)}
+                    <p className="text-xs leading-5 opacity-60">{t("config.channelEditor.multipleKeysHint")}</p>
+                </div> : <label className="block md:col-span-2">
                     <span className="mb-1 block text-sm font-medium">API Key</span>
                     <Input.Password value={draft.apiKey} onChange={(event) => patch({ apiKey: event.target.value })} placeholder="sk-..." />
-                </label>
+                </label>}
             </div>
             {draft.apiFormat === "agnes" ? (
                 <div className="mt-3 space-y-1 text-xs opacity-60">

@@ -1,7 +1,7 @@
 import axios from "axios";
 
 import i18n from "@/i18n";
-import { AGNES_BASE_URL, buildApiUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { AGNES_BASE_URL, buildApiUrl, channelApiKeys, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { agnesUsesChat, buildAgnesChatBody, buildAgnesImageBody } from "./agnes";
 import { nanoid } from "nanoid";
@@ -722,10 +722,11 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
 async function requestAgnesImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, options?: RequestOptions) {
     const images = await Promise.all(references.map((image) => imageToDataUrl(image, options)));
     options?.signal?.throwIfAborted();
-    const body = buildAgnesImageBody(config, withSystemPrompt(config, prompt), images);
+    const body = buildAgnesImageBody(resolveModelRequestConfig(config, config.model), withSystemPrompt(config, prompt), images);
     const requests = Array.from({ length: count }, async () => {
         options?.signal?.throwIfAborted();
-        const response = await axios.post<ImageApiResponse>(aiApiUrl(config, "/images/generations"), body, { headers: aiHeaders(config, "application/json"), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
+        const requestConfig = resolveModelRequestConfig(config, config.model, { rotateApiKey: true });
+        const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/generations"), body, { headers: aiHeaders(requestConfig, "application/json"), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
         options?.signal?.throwIfAborted();
         return parseImagePayload(response.data);
     });
@@ -736,9 +737,9 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const signal = serverSessionSignal(options?.signal);
     signal.throwIfAborted();
     options = { ...options, signal };
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
-    const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const script = resolveModelScript(config, config.model || config.imageModel);
+    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel, { rotateApiKey: Boolean(script) });
+    const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     if (script) {
         const quality = normalizeQuality(config.quality);
         const requestSize = resolveRequestSize(config.size);
@@ -760,7 +761,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     }
     if (requestConfig.apiFormat === "agnes") {
         try {
-            return await requestAgnesImages(requestConfig, prompt, [], n, options);
+            return await requestAgnesImages({ ...config, model: config.model || config.imageModel }, prompt, [], n, options);
         } catch (error) {
             signal.throwIfAborted();
             throw new Error(readAxiosError(error, apiText("requestFailed")));
@@ -807,10 +808,10 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const signal = serverSessionSignal(options?.signal);
     signal.throwIfAborted();
     options = { ...options, signal };
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
+    const script = resolveModelScript(config, config.model || config.imageModel);
+    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel, { rotateApiKey: Boolean(script) });
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
-    const script = resolveModelScript(config, config.model || config.imageModel);
     if (script) {
         const quality = normalizeQuality(config.quality);
         const requestSize = resolveRequestSize(config.size);
@@ -833,7 +834,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     }
     if (requestConfig.apiFormat === "agnes") {
         try {
-            return await requestAgnesImages(requestConfig, requestPrompt, references, n, options);
+            return await requestAgnesImages({ ...config, model: config.model || config.imageModel }, requestPrompt, references, n, options);
         } catch (error) {
             signal.throwIfAborted();
             throw new Error(readAxiosError(error, apiText("requestFailed")));
@@ -885,7 +886,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
     const signal = serverSessionSignal(options?.signal);
     signal.throwIfAborted();
     options = { ...options, signal };
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
+    const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel, { rotateApiKey: true });
     const script = resolveModelScript(config, config.model || config.textModel);
     if (script) {
         try {
@@ -956,7 +957,7 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
 }
 
 export async function fetchChannelModels(channel: ModelChannel) {
-    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
+    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channelApiKeys(channel)[0]?.value || "", apiFormat: channel.apiFormat });
 }
 
 const defaultGeminiConfig: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat" | "model" | "systemPrompt"> = {

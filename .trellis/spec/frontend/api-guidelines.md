@@ -32,6 +32,12 @@ Agnes compatibility is selected only by the channel's explicit `apiFormat: "agne
 
 The same provider type crosses `GET /api/shared-api-config`: keep the Zod enum in `server/src/shared-api-config.ts` aligned for both `apiFormat` and `channels[].apiFormat`. Members consume Agnes through the existing read-only shared catalog, not a separate preset or private copy. An empty shared catalog stays empty even on first login, while personal selections remain unchanged when a shared model disappears.
 
+Agnes channels may set `apiKeyMode` to `single` (default), `round-robin`, or `random`, plus `apiKeys: Array<{ id: string; value: string }>`. The shared API must project both fields within `channels`; member persistence still excludes the entire shared catalog. `normalizeChannelApiKeys` trims/deduplicates values and preserves IDs only for unchanged credentials. Editing a key or importing changed contents under an existing ID must allocate a new ID so an old task cannot silently use another credential.
+
+`resolveModelRequestConfig(config, model, { rotateApiKey?: boolean, apiKeyId?: string })` owns selection. Ordinary resolution/readiness/model discovery must not advance the cursor. Only new submissions opt into rotation, once per image in built-in batches or once per custom-script execution. Cursors are per channel and current page/session, cleared by the server session epoch; no browser business persistence or server-wide scheduling is added. Empty active pools fail instead of falling back to the single key. Other provider protocols ignore the pool.
+
+Multi-key Agnes video tasks persist `apiKeyId`, with `videoTaskApiKeyId` on canvas nodes. Polling resolves that exact ID from the originating channel, independently of the current selection mode, and never rotates or retries with another key. Missing or edited keys fail before provider HTTP. Do not put raw credentials in task metadata, generation history, ZIP, or WebDAV media records. Keep existing polling/timeouts/retries/concurrency intact. Multi-key regression cases were added but have not been run.
+
 ### 2. Signatures
 
 `ApiCallFormat` includes `agnes`; `VideoGenerationTask.provider` and `CanvasNodeMetadata.videoTaskProvider` also include `agnes`. Creation stores Agnes `video_id` in the existing `id` / `videoTaskId` fields and retains the encoded model/channel identity. No storage-version change or migration is required.

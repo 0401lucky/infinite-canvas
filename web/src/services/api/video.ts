@@ -7,7 +7,7 @@ import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/medi
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { serverSessionSignal } from "@/services/api/server";
-import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, useConfigStore, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
+import { boolConfig, buildApiUrl, modelCapabilityOf, modelOptionName, resolveModelRequestConfig, resolveModelScript, useConfigStore, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
 import { agnesVideoQueryUrl, agnesVideoQueueError, agnesVideoTaskId, agnesVideoTaskState, buildAgnesVideoBody, type AgnesVideoResponse } from "./agnes";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
@@ -21,7 +21,7 @@ type VideoMediaOptions = RequestOptions & { videos?: ReferenceVideo[]; audios?: 
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
-export type VideoGenerationTask = { id: string; provider: "openai" | "gemini" | "agnes" | "plugin"; model: string };
+export type VideoGenerationTask = { id: string; provider: "openai" | "gemini" | "agnes" | "plugin"; model: string; apiKeyId?: string };
 type GeminiInlineData = { bytesBase64Encoded: string; mimeType: string };
 type GeminiVideoOperation = {
     name?: string;
@@ -79,8 +79,8 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     signal.throwIfAborted();
     options = { ...options, signal };
     const selectedModel = (config.model || config.videoModel).trim();
-    const requestConfig = resolveModelRequestConfig(config, selectedModel);
     const script = resolveModelScript(config, selectedModel);
+    const requestConfig = resolveModelRequestConfig(config, selectedModel, { rotateApiKey: Boolean(script) });
     if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
     assertVideoConfig(requestConfig, requestConfig.model);
     if (!useConfigStore.getState().isAiConfigReady(config, selectedModel)) throw new Error(apiText("videoModelUnavailable"));
@@ -97,9 +97,9 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
         const result = pluginVideoResults.get(task.id);
         return result ? { status: "completed", result } : { status: "failed", error: apiText("pluginVideoExpired") };
     }
-    const requestConfig = resolveModelRequestConfig(config, task.model);
+    if (!modelCapabilityOf(config, task.model)) throw new Error(apiText("videoModelUnavailable"));
+    const requestConfig = resolveModelRequestConfig(config, task.model, { apiKeyId: task.apiKeyId });
     assertVideoConfig(requestConfig, requestConfig.model);
-    if (!useConfigStore.getState().isAiConfigReady(config, task.model)) throw new Error(apiText("videoModelUnavailable"));
     if (requestConfig.apiFormat !== task.provider) throw new Error(apiText("videoTaskProviderMismatch"));
     if (task.provider === "agnes") return pollAgnesVideoTask(requestConfig, task, options);
     if (task.provider === "gemini") return pollGeminiVideoTask(requestConfig, task, options);
@@ -161,11 +161,12 @@ export async function storeGeneratedVideo(result: VideoGenerationResult, options
 
 async function createAgnesVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
     const body = buildAgnesVideoBody(config, prompt, references.length + (options?.videos?.length || 0) + (options?.audios?.length || 0));
+    const requestConfig = resolveModelRequestConfig(config, model, { rotateApiKey: true });
     try {
-        const response = await axios.post<ApiEnvelope<AgnesVideoResponse>>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config, "application/json"), signal: options?.signal });
+        const response = await axios.post<ApiEnvelope<AgnesVideoResponse>>(aiApiUrl(requestConfig, "/videos"), body, { headers: aiHeaders(requestConfig, "application/json"), signal: options?.signal });
         options?.signal?.throwIfAborted();
         const created = unwrapEnvelope(response.data, apiText("noVideoTask"));
-        return { id: agnesVideoTaskId(created), provider: "agnes", model };
+        return { id: agnesVideoTaskId(created), provider: "agnes", model, ...(requestConfig.apiKeyId ? { apiKeyId: requestConfig.apiKeyId } : {}) };
     } catch (error) {
         options?.signal?.throwIfAborted();
         throw new Error((axios.isAxiosError(error) && agnesVideoQueueError(error.response?.data)) || readAxiosError(error, apiText("videoTaskCreateFailed")));

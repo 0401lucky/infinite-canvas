@@ -25,7 +25,7 @@ export async function requestAudioGeneration(config: AiConfig, prompt: string, o
     const signal = serverSessionSignal(options?.signal);
     signal.throwIfAborted();
     options = { ...options, signal };
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.audioModel);
+    const requestConfig = resolveModelRequestConfig(config, config.model || config.audioModel, { rotateApiKey: true });
     const model = requestConfig.model.trim();
     const format = normalizeAudioFormatValue(config.audioFormat);
     const script = resolveModelScript(config, config.model || config.audioModel);

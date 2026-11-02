@@ -5,6 +5,15 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## Agnes Multiple API Keys
+
+Implemented, pending verification. No tests or builds were run for this change.
+
+- Channel editor: Agnes offers Single key, Round robin, and Random; existing channels default to Single key. Add/edit/remove masked keys, save, reload, and export/import settings. Blank and duplicate entries should be removed on save, and shared members should receive both the key pool and strategy without persisting them in private preferences.
+- Selection: each new image, text/vision request, video submission, or custom-script execution selects a key. A multi-image batch rotates per image. Round robin is independent per channel in the current page/session and restarts on reload/session reset; Random selects from the configured pool. Model discovery uses the first key without advancing the generation sequence. Other protocols keep their single-key behavior, and an empty enabled pool must not fall back to an old key.
+- Video affinity: after JSON/history/canvas restoration, repeated queries use the submission key even if the pool is reordered or the selection mode changes. Only the key ID enters task metadata, never the credential. Editing/removing that key must block the query instead of choosing another key; restoring the original configuration may restore access. Configuration imports must not reuse an existing ID for changed key contents; a URL credential update replaces the pool's first key with a new identity while retaining the remaining keys.
+- Added 11 regression cases in `web/tests/agnes-api.test.ts` covering selection, request headers, session reset, stable task identity, shared configuration, and unavailable keys. These new cases have not been executed. Existing timeout, polling, retry, and concurrency behavior remains unchanged.
+
 ## Agnes Built-In Provider
 
 The user reported that Agnes testing passed and approved integration and publication to `main`; the base feature is now described in [Features](/docs/overview/features). The earlier authorized Docker run built an isolated `linux/amd64` image and passed **17 tests / 93 assertions**. Those results predate integration with member accounts; no syntax/type/lint checks, tests, formatting, or builds were run again for this merge.

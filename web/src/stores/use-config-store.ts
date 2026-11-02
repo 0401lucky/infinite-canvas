@@ -10,6 +10,8 @@ import { readSharedApiConfig, serverSessionEpoch, serverSessionSignal } from "@/
 export type ApiCallFormat = "openai" | "gemini" | "agnes";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "xhigh";
+export type ApiKeyMode = "single" | "round-robin" | "random";
+export type ChannelApiKey = { id: string; value: string };
 
 export type ChannelModel = {
     name: string;
@@ -22,6 +24,8 @@ export type ModelChannel = {
     name: string;
     baseUrl: string;
     apiKey: string;
+    apiKeyMode?: ApiKeyMode;
+    apiKeys?: ChannelApiKey[];
     apiFormat: ApiCallFormat;
     models: ChannelModel[];
 };
@@ -230,7 +234,7 @@ export function resolveModelScript(config: AiConfig, value: string) {
 
 function isAiConfigReady(config: AiConfig, model: string) {
     const match = findChannelModel(config, model);
-    return Boolean(match && match.channel.baseUrl.trim() && match.channel.apiKey.trim());
+    return Boolean(match && match.channel.baseUrl.trim() && channelApiKeys(match.channel).length);
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -353,6 +357,16 @@ export function normalizeChannelModels(models: Array<string | ChannelModel> | un
     return result;
 }
 
+export function normalizeChannelApiKeys(keys: ChannelApiKey[], previous = keys): ChannelApiKey[] {
+    const ids = new Map(previous.map((item) => [item.value.trim(), item.id]));
+    return [...new Set(keys.map((item) => item.value.trim()).filter(Boolean))].map((value) => ({ id: ids.get(value) || nanoid(), value }));
+}
+
+export function channelApiKeys(channel: ModelChannel): ChannelApiKey[] {
+    if (channel.apiFormat === "agnes" && (channel.apiKeyMode === "round-robin" || channel.apiKeyMode === "random")) return (channel.apiKeys || []).filter((item) => item.id && item.value.trim());
+    return channel.apiKey.trim() ? [{ id: "", value: channel.apiKey }] : [];
+}
+
 export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
     const apiFormat = normalizeApiFormat(channel?.apiFormat);
     return {
@@ -360,6 +374,8 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         name: channel?.name?.trim() || i18n.t("config.channels.newName"),
         baseUrl: apiFormat === "agnes" ? AGNES_BASE_URL : channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat),
         apiKey: channel?.apiKey || "",
+        apiKeyMode: channel?.apiKeyMode === "round-robin" || channel?.apiKeyMode === "random" ? channel.apiKeyMode : "single",
+        apiKeys: normalizeChannelApiKeys(channel?.apiKeys || []),
         apiFormat,
         models: normalizeChannelModels(channel?.models),
     };
@@ -382,7 +398,9 @@ export function upsertChannelCredentials(
         if (existing.baseUrl === baseUrl && (!apiKey || existing.apiKey === apiKey)) {
             return { status: "updated", channelName: existing.name, config };
         }
+        const pooled = existing.apiFormat === "agnes" && (existing.apiKeyMode === "round-robin" || existing.apiKeyMode === "random");
         const updated = { ...existing, baseUrl, ...(apiKey ? { apiKey } : {}) };
+        if (pooled && apiKey) updated.apiKeys = normalizeChannelApiKeys([{ id: "", value: apiKey }, ...(existing.apiKeys || []).slice(1)], existing.apiKeys || []);
         const channels = config.channels.map((channel, index) => (index === matchingIndex ? updated : channel));
         return { status: "updated", channelName: existing.name, config: { ...config, channels } };
     }
@@ -477,13 +495,38 @@ export function resolveModelChannel(config: AiConfig, value: string) {
     return matched || config.channels[0] || createModelChannel({ id: "default", name: i18n.t("config.channels.defaultName"), baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName).map((name) => ({ name, capability: guessCapability(name) })) });
 }
 
-export function resolveModelRequestConfig(config: AiConfig, value: string) {
+const keyRotations = new Map<string, { keys: string; next: number }>();
+let keyRotationEpoch = -1;
+
+export function resolveModelRequestConfig(config: AiConfig, value: string, options: { rotateApiKey?: boolean; apiKeyId?: string } = {}) {
     const channel = resolveModelChannel(config, value);
+    const keys = channelApiKeys(channel);
+    let selected: ChannelApiKey | undefined = keys[0];
+    if (channel.apiFormat === "agnes" && options.apiKeyId) {
+        selected = channel.apiKeys?.find((item) => item.id === options.apiKeyId && item.value.trim());
+        if (!selected) throw new Error(i18n.t("apiErrors.agnesTaskKeyMissing"));
+    } else if (channel.apiFormat === "agnes" && options.rotateApiKey) {
+        if (!keys.length) throw new Error(i18n.t("apiErrors.apiKeyRequired"));
+        if (channel.apiKeyMode === "random") selected = keys[Math.floor(Math.random() * keys.length)];
+        else if (channel.apiKeyMode === "round-robin") {
+            if (keyRotationEpoch !== serverSessionEpoch()) {
+                keyRotationEpoch = serverSessionEpoch();
+                keyRotations.clear();
+            }
+            const signature = JSON.stringify(keys.map((item) => item.id));
+            const saved = keyRotations.get(channel.id);
+            const cursor = saved?.keys === signature ? saved : { keys: signature, next: 0 };
+            selected = keys[cursor.next];
+            cursor.next = (cursor.next + 1) % keys.length;
+            keyRotations.set(channel.id, cursor);
+        }
+    }
     return {
         ...config,
         model: modelOptionName(value || config.model),
         baseUrl: channel.apiFormat === "agnes" ? AGNES_BASE_URL : channel.baseUrl,
-        apiKey: channel.apiKey,
+        apiKey: selected?.value || "",
+        apiKeyId: selected?.id || undefined,
         apiFormat: channel.apiFormat,
     };
 }
