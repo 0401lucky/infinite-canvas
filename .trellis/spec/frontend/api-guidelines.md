@@ -30,6 +30,8 @@ Before adding/changing timeouts, retry counts, size limits, or concurrency, expl
 
 Agnes compatibility is selected only by the channel's explicit `apiFormat: "agnes"`. `use-config-store.ts` owns the official `AGNES_BASE_URL` and six Flash presets; `agnes.ts` owns provider-specific bodies, validations and task URLs. The existing image/video services own HTTP/SSE and private persistence. Never infer the protocol from a hostname/model name or seed models during hydration. Saved empty channel/model lists stay empty, without reconstruction from flat legacy fields; a genuinely new installation with no saved configuration retains `defaultConfig.channels`. Custom scripts retain priority.
 
+The same provider type crosses `GET /api/shared-api-config`: keep the Zod enum in `server/src/shared-api-config.ts` aligned for both `apiFormat` and `channels[].apiFormat`. Members consume Agnes through the existing read-only shared catalog, not a separate preset or private copy. An empty shared catalog stays empty even on first login, while personal selections remain unchanged when a shared model disappears.
+
 ### 2. Signatures
 
 `ApiCallFormat` includes `agnes`; `VideoGenerationTask.provider` and `CanvasNodeMetadata.videoTaskProvider` also include `agnes`. Creation stores Agnes `video_id` in the existing `id` / `videoTaskId` fields and retains the encoded model/channel identity. No storage-version change or migration is required.
@@ -78,6 +80,10 @@ Apply `withLocalProxy` only after constructing external URLs; root queries must 
 `web/tests/agnes-api.test.ts` contains mocked assertions for preset normalization/deletion, explicit protocol isolation, exact request fields, queue-full/no retry, task ID and root-query identity, protocol/model mismatch, image count/size rules, script priority, Chat fragmented UTF-8/SSE/JSON and reasoning, and old-session rejection. The user-authorized isolated Docker run passes 17 tests / 93 assertions; do not automatically rerun checks. Independent Chrome also verifies provider UI/import/export/deletion, simulated text/image/video flows, private originals/refresh/download/Range, container restart, and pending-video logout cancellation. Simulated replies and the CC0 test clip are not real Agnes output: actual authenticated-provider/media CORS, Chat `max` behavior, the real video lifecycle, production/proxy/other-provider regression, and remaining failure/cancellation cases still need acceptance. Mobile compact-row name truncation also needs usability confirmation. The earlier free-video queue returned 503 without a task; it was not called again in this Docker run. See the active task's `research/docker-validation.md` for precise evidence.
 
 ### 7. Wrong vs Correct
+
+Wrong: add `agnes` only to the browser type while the shared API schema rejects it, preventing member hydration.
+
+Correct: accept `z.enum(["openai", "gemini", "agnes"])` at the shared boundary without widening the private-field allowlist. The three additional member cases in `web/tests/agnes-api.test.ts` cover hydration/persistence, empty/read-only catalogs, and account-bound refresh with removed selections; they were added after the earlier 17-test run and have not been executed.
 
 Wrong: persist Agnes `id` as an OpenAI task and query `/v1/videos/{id}`; silently infer Agnes from a model name.
 

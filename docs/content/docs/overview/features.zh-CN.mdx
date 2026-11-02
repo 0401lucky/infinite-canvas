@@ -12,7 +12,7 @@ description: 当前项目已实现的主要功能
 - 支持创建多个画布项目。
 - 支持项目重命名、删除、批量选择和批量删除。
 - 支持单个画布项目导出为 JSON，也支持从 JSON 导入画布。
-- 画布项目保存在浏览器本地，登录账号后暂不会自动同步到服务器。
+- 画布项目保存在自部署应用服务中，按登录账号独立持久化。
 
 ## 无限画布
 
@@ -57,7 +57,7 @@ description: 当前项目已实现的主要功能
 
 ## AI 生成
 
-项目默认使用前台直连：前端使用浏览器本地配置的 Base URL、API Key 和 Model 直接请求 OpenAI 兼容接口，不再通过项目服务端转发 AI 请求。
+项目默认使用前台直连：登录后的浏览器读取服务端保存的渠道配置，再使用 Base URL、API Key 和 Model 直接请求 AI 提供商；应用服务不转发 AI 请求。
 
 OpenAI 兼容图像和文本能力继续复用现有接口：
 
@@ -91,6 +91,13 @@ Base URL 如果已经以 `/v1` 结尾，系统不会再追加 `/v1`。
 节点下方对话框和组装提示词输入框都支持 `@` 引用已连接的图片、文本、视频、音频等资源；`@` 引用图片时，输入框内会直接显示该图片的真实缩略图，而不再是「图片1」这类文字编号，发送时会按当前连接自动编号交给模型理解。由于引用改在对话框内直接 `@`，画布节点右上角不再显示「图片1 / 文本1」资源角标。
 
 视频生成可从文本节点读取 prompt，从图片节点读取参考图。生成成功后会把视频插入画布为视频节点并使用原生播放器预览。
+
+### Agnes 内置渠道
+
+- 新增 Agnes 时预填官方地址和六个 Flash 模型，填写 Key 后选择模型使用，不替换原默认模型或已保存的调用脚本。
+- 纯文本使用 Responses，带图问答使用 Chat Completions，文生图和原图编辑使用 Agnes 专用 JSON 协议。
+- 文生视频保存 `video_id`，刷新后通过根路径 `/agnesapi` 继续查询；不支持的设置或免费队列满时明确报错，不自动重试或切换收费模型。
+- 暂不支持私有视频参考素材；价格以 Agnes 官方为准，不承诺永久免费。详细限制及整合后的回归项见[待测试](/zh-CN/docs/progress/pending-test)。
 
 ## 画布助手
 
@@ -139,11 +146,11 @@ Codex App 插件的安装与使用见 [Codex App 插件](/zh-CN/docs/overview/co
 - 拉取失败时保留上一次成功缓存，并显示来源状态和最近成功时间。
 - 跨已启用来源搜索提示词，按标签筛选，查看详情、复制提示词或插入画布。
 
-7 个内置来源为 Banana Prompt Quicker、DavidWu GPT Image 2、Freestylefly GPT Image 2、Awesome GPT Image、Awesome GPT-4o、YouMind GPT Image 2 和 YouMind Nano Banana Pro。应用从 [Image Prompts](https://github.com/yukkcat/image-prompts) 统一仓库读取标准 JSON，由浏览器前端直连并缓存到 IndexedDB。完整来源见[第三方提示词来源](/zh-CN/docs/overview/third-party-prompt-repositories)。
+7 个内置来源为 Banana Prompt Quicker、DavidWu GPT Image 2、Freestylefly GPT Image 2、Awesome GPT Image、Awesome GPT-4o、YouMind GPT Image 2 和 YouMind Nano Banana Pro。应用从 [Image Prompts](https://github.com/yukkcat/image-prompts) 统一仓库读取标准 JSON，由浏览器前端直连并缓存到服务端。完整来源见[第三方提示词来源](/zh-CN/docs/overview/third-party-prompt-repositories)。
 
 ## 素材
 
-“我的素材”是浏览器本地素材库，支持：
+“我的素材”是按账号保存在应用服务中的私有素材库，支持：
 
 - 新增文本素材和图片素材。
 - 编辑素材标题、封面、标签、来源、备注和内容。
@@ -158,12 +165,13 @@ Codex App 插件的安装与使用见 [Codex App 插件](/zh-CN/docs/overview/co
 
 ## 配置和同步
 
-- 当前版本不需要账号登录，也不再提供后台管理页面。
+- 当前版本需要账号登录，管理员可以创建和管理成员账号，各账号独立保存创作数据与偏好。
 - 配置与用户偏好弹窗支持多个 OpenAI 兼容渠道、默认模型、生成偏好和 WebDAV 同步设置。
+- API 渠道、密钥和模型目录由管理员维护并共享给成员；成员可单独选择默认模型，但不能修改共享渠道。
 - 第三方提示词、WebDAV 和 AI 接口都由浏览器前端直连，不经过项目后端代理。
 
 ## 当前限制
 
-- 画布项目和“我的素材”目前只保存在浏览器本地，不会随账号同步。
-- AI API Key 保存在浏览器本地，并由浏览器直接请求配置的 OpenAI 兼容接口；只适合个人或可信环境使用。
+- 账号、画布和素材由自部署应用服务持久化，不代表提供托管云同步服务。
+- AI API Key 保存在服务端 SQLite，但登录后的成员浏览器仍可读取并直连提供商；账号、插件和备份均需按可信环境管理。
 - 画布更适合桌面端使用，移动端触控体验还未系统完善。

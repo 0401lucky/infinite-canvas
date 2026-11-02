@@ -3,10 +3,11 @@ import express, { type ErrorRequestHandler, type Request } from "express";
 import multer from "multer";
 import { z } from "zod";
 
-import { authRouter, checkOrigin, cookies, initializeAdmin, requireSession } from "./auth.js";
+import { accountsRouter, authRouter, checkOrigin, cookies, initializeAdmin, requireAdmin, requireSession } from "./auth.js";
 import { config } from "./config.js";
 import { clearImages, mediaRouter, storageUsage } from "./media.js";
-import { ApiError, readRecord, readRecords, replaceRecords, saveRecord } from "./storage.js";
+import { ApiError } from "./storage.js";
+import { readSharedApiConfig } from "./shared-api-config.js";
 
 await initializeAdmin();
 const app = express();
@@ -16,26 +17,28 @@ app.use("/api", cookies, checkOrigin);
 const json = express.json({ limit: config.jsonBytes });
 app.use("/api/auth", json, authRouter);
 app.use("/api", requireSession);
+app.use("/api/accounts", requireAdmin, json, requireSession, accountsRouter);
+app.get("/api/shared-api-config", (_req, res) => res.json({ data: readSharedApiConfig() }));
 app.use("/api/media", mediaRouter);
-app.get("/api/storage", async (_req, res) => res.json({ data: await storageUsage() }));
-app.delete("/api/storage/images", async (_req, res) => res.json({ data: await clearImages() }));
+app.get("/api/storage", async (_req, res) => res.json({ data: await storageUsage(res.locals.storage) }));
+app.delete("/api/storage/images", async (_req, res) => res.json({ data: await clearImages(res.locals.storage) }));
 
 const namespaceSchema = z.string().refine((value) => ["app_state", "image_generation_logs", "video_generation_logs", "prompt_cache"].includes(value) || (value.startsWith("plugin:") && value.length > 7));
 const namespace = (req: Request) => namespaceSchema.parse(req.params.namespace);
 const key = (req: Request) => z.string().min(1).parse(req.params.key);
 const revision = (req: Request) => z.coerce.number().int().nonnegative().parse(req.get("if-match"));
-app.get("/api/records/:namespace", (req, res) => res.json({ data: readRecords(namespace(req)) }));
-app.get("/api/records/:namespace/:key", (req, res) => res.json({ data: readRecord(namespace(req), key(req)) }));
+app.get("/api/records/:namespace", (req, res) => res.json({ data: res.locals.storage.readRecords(namespace(req)) }));
+app.get("/api/records/:namespace/:key", (req, res) => res.json({ data: res.locals.storage.readRecord(namespace(req), key(req)) }));
 app.put("/api/records/:namespace/:key", json, requireSession, (req, res) => {
     const body = z.object({ value: z.unknown() }).parse(req.body);
-    res.json({ data: saveRecord(namespace(req), key(req), body.value, revision(req)) });
+    res.json({ data: res.locals.storage.saveRecord(namespace(req), key(req), body.value, revision(req)) });
 });
-app.delete("/api/records/:namespace/:key", (req, res) => res.json({ data: saveRecord(namespace(req), key(req), null, revision(req), true) }));
+app.delete("/api/records/:namespace/:key", (req, res) => res.json({ data: res.locals.storage.saveRecord(namespace(req), key(req), null, revision(req), true) }));
 app.put("/api/records/:namespace", json, requireSession, (req, res) => {
     const items = z.array(z.object({ key: z.string().min(1), value: z.unknown() })).parse(req.body?.records);
-    res.json({ data: replaceRecords(namespace(req), items, revision(req)) });
+    res.json({ data: res.locals.storage.replaceRecords(namespace(req), items, revision(req)) });
 });
-app.delete("/api/records/:namespace", (req, res) => res.json({ data: replaceRecords(namespace(req), [], revision(req)) }));
+app.delete("/api/records/:namespace", (req, res) => res.json({ data: res.locals.storage.replaceRecords(namespace(req), [], revision(req)) }));
 app.use("/api", (_req, _res, next) => next(new ApiError(404, "NOT_FOUND", "接口不存在")));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));

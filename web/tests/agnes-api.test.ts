@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import axios, { AxiosError, type AxiosResponse } from "axios";
-import type { AiConfig, ApiCallFormat } from "../src/stores/use-config-store";
+import type { AiConfig, ApiCallFormat, SharedApiConfig } from "../src/stores/use-config-store";
 import type { AiTextMessage } from "../src/services/api/image";
 import type { VideoGenerationTask } from "../src/services/api/video";
 
@@ -27,8 +27,8 @@ const { resetServerSession, serverSessionSignal } = await import("../src/service
 const { default: i18n } = await import("../src/i18n");
 
 beforeEach(() => {
-    resetServerSession(true);
-    useConfigStore.setState({ config: defaultConfig });
+    resetServerSession("test-user");
+    useConfigStore.setState(useConfigStore.getInitialState(), true);
 });
 afterEach(() => {
     mock.restore();
@@ -38,6 +38,13 @@ afterEach(() => {
 function configFor(model: string, apiFormat: ApiCallFormat = "agnes"): AiConfig {
     const channel = createModelChannel({ id: "selected", name: "Selected", apiFormat, baseUrl: AGNES_BASE_URL, apiKey: "test-key", models: AGNES_FLASH_MODELS });
     return { ...defaultConfig, channels: [channel], models: modelOptionsFromChannels([channel]), model: encodeChannelModel(channel.id, model) };
+}
+function sharedConfigFor(): SharedApiConfig {
+    const { channels, models, model } = configFor("agnes-2.5-flash");
+    return {
+        baseUrl: AGNES_BASE_URL, apiKey: "shared-test-key", apiFormat: "agnes", channels, models, model,
+        imageModel: encodeChannelModel("selected", "agnes-image-2.5-flash"), videoModel: encodeChannelModel("selected", "agnes-video-2.5-flash"), textModel: model, audioModel: "",
+    };
 }
 const reply = (data: unknown) => ({ data } as AxiosResponse);
 const vision: AiTextMessage[] = [
@@ -84,6 +91,58 @@ test("an Agnes hostname or model name never converts an OpenAI channel implicitl
     const changed = createModelChannel({ ...config.channels[0], apiFormat: "agnes", models: [{ name: "kept", capability: "text", script: "return 'kept';" }] });
     expect(changed.apiKey).toBe(config.channels[0].apiKey);
     expect(changed.models[0].script).toBe("return 'kept';");
+});
+
+test("member hydration inherits Agnes while private preferences and removed selections stay private", () => {
+    const sharedApiConfig = sharedConfigFor();
+    const options = useConfigStore.persist.getOptions();
+    const current = { ...useConfigStore.getState(), sharedApiConfig };
+    const fresh = options.merge!(null, current);
+    expect(fresh.config.apiFormat).toBe("agnes");
+    expect(fresh.config.channels).toEqual(sharedApiConfig.channels);
+    expect(fresh.config.textModel).toBe(sharedApiConfig.textModel);
+    const restored = options.merge!({ config: { channels: defaultConfig.channels, apiKey: "stale-private-key", textModel: "removed::model", systemPrompt: "Private prompt" } }, current);
+    expect(restored.config.channels).toEqual(sharedApiConfig.channels);
+    expect(restored.config.apiKey).toBe(sharedApiConfig.apiKey);
+    expect(restored.config.textModel).toBe("removed::model");
+    expect(restored.config.systemPrompt).toBe("Private prompt");
+    const persisted = options.partialize!(restored);
+    for (const key of ["baseUrl", "apiKey", "apiFormat", "channels", "models"]) expect(persisted.config).not.toHaveProperty(key);
+    expect(persisted.config).toMatchObject({ textModel: "removed::model", systemPrompt: "Private prompt" });
+    expect(persisted).not.toHaveProperty("sharedApiConfig");
+});
+
+test("empty shared providers remain empty and member edits cannot replace the shared catalog", () => {
+    const sharedApiConfig = { ...sharedConfigFor(), channels: [], models: [] };
+    const restored = useConfigStore.persist.getOptions().merge!({ config: defaultConfig }, { ...useConfigStore.getState(), sharedApiConfig });
+    expect(restored.config.channels).toEqual([]);
+    expect(restored.config.models).toEqual([]);
+    useConfigStore.setState(restored);
+    const { updateConfig, importChannelCredentials } = useConfigStore.getState();
+    updateConfig("channels", defaultConfig.channels);
+    updateConfig("apiKey", "member-key");
+    expect(importChannelCredentials({ baseUrl: AGNES_BASE_URL, apiKey: "member-key" }).status).toBe("read-only");
+    expect(useConfigStore.getState().config.channels).toEqual([]);
+    expect(useConfigStore.getState().config.apiKey).toBe(sharedApiConfig.apiKey);
+    updateConfig("textModel", "selected::personal-choice");
+    expect(useConfigStore.getState().config.textModel).toBe("selected::personal-choice");
+});
+
+test("shared Agnes refresh binds the account and preserves a removed personal selection", async () => {
+    const sharedApiConfig = sharedConfigFor();
+    useConfigStore.setState({ sharedApiConfig, config: { ...defaultConfig, ...sharedApiConfig } });
+    const updated = { ...sharedApiConfig, channels: [{ ...sharedApiConfig.channels[0], models: [] }], models: [] };
+    const fetch = spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ data: updated }), { headers: { "Content-Type": "application/json" } }));
+    await useConfigStore.getState().refreshSharedApiConfig();
+    expect(String(fetch.mock.calls[0][0])).toBe("/api/shared-api-config");
+    expect(new Headers(fetch.mock.calls[0][1]?.headers).get("X-Canvas-User")).toBe("test-user");
+    expect(useConfigStore.getState().config.channels[0].apiFormat).toBe("agnes");
+    expect(useConfigStore.getState().config.models).toEqual([]);
+    expect(useConfigStore.getState().config.textModel).toBe(sharedApiConfig.textModel);
+    expect(useConfigStore.getState().isAiConfigReady(useConfigStore.getState().config, sharedApiConfig.textModel)).toBe(false);
+    fetch.mockRejectedValue(new Error("Unavailable"));
+    await expect(useConfigStore.getState().refreshSharedApiConfig()).rejects.toThrow();
+    expect(useConfigStore.getState().sharedApiConfig).toEqual(updated);
 });
 
 test("video creation sends only JSON text-video fields with the unchanged six-second default", () => {
@@ -233,7 +292,7 @@ test("ending a session stops further stream callbacks and old-session media writ
     const deltas: string[] = [];
     await expect(requestImageQuestion(configFor("agnes-2.5-flash"), vision, (text) => { deltas.push(text); resetServerSession(); })).rejects.toThrow();
     expect(deltas).toEqual(["\u732b"]);
-    resetServerSession(true);
+    resetServerSession("other-user");
     await expect(storeGeneratedVideo({ blob: new Blob(["old video"], { type: "video/mp4" }) }, { signal })).rejects.toThrow();
     expect(fetch).toHaveBeenCalledTimes(1);
 });

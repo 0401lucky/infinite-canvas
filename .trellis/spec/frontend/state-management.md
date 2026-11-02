@@ -22,6 +22,8 @@ Capture `serverSessionSignal()` before asynchronous work. Check that original si
 
 Include asynchronous config/ZIP file reads and custom canvas/asset hydration in this rule. A hydration completion callback may update `hydrated` only in its starting epoch; canceled older loading must reject rather than report success or reset a later session's loaded state.
 
+`resetServerSession(userId)` binds protected requests to the hydrated account with `X-Canvas-User`; a cross-tab cookie/account switch must fail with 401 instead of saving old state into the new user's store. Members must load the administrator's shared API settings before hydration completes. `use-config-store.ts` keeps these in non-persisted `sharedApiConfig`, overlays provider fields on private preferences, and omits shared providers/keys from member config persistence. Initial default models are inherited; subsequent member selections stay private. The refresh action updates shared providers on window focus or an explicit request, preserving unavailable selected models instead of silently switching channels.
+
 ## Media Ownership
 
 - `web/src/services/image-storage.ts` owns image upload/read APIs, previews, original Blob caches, and resolved URLs; SQLite and private files are the persistence owner.

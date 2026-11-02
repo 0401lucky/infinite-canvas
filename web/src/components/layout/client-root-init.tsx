@@ -28,6 +28,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     const importChannelCredentials = useConfigStore((state) => state.importChannelCredentials);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const ready = useUserStore((state) => state.ready);
+    const isMember = useUserStore((state) => state.user?.role === "member");
     const sessionExpired = useStorageStore((state) => state.sessionExpired);
     const error = useStorageStore((state) => state.error);
     const errorId = useStorageStore((state) => state.errorId);
@@ -37,6 +38,18 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     useEffect(() => { void useUserStore.getState().restoreSession(); }, []);
     useEffect(() => { if (sessionExpired) useUserStore.getState().clearSession(); }, [sessionExpired]);
     useEffect(() => { if (error) message.error({ content: error, key: "server-storage-error" }); }, [errorId, message]);
+    useEffect(() => {
+        if (!ready || !isMember) return;
+        const refresh = () => {
+            if (document.visibilityState !== "visible") return;
+            const signal = serverSessionSignal();
+            void useConfigStore.getState().refreshSharedApiConfig().catch((reason) => {
+                if (!signal.aborted) message.error({ content: reason instanceof Error ? reason.message : t("server.unavailable"), key: "shared-api-config-error" });
+            });
+        };
+        window.addEventListener("focus", refresh);
+        return () => window.removeEventListener("focus", refresh);
+    }, [ready, isMember, message, t]);
     useEffect(() => {
         const prevent = (event: BeforeUnloadEvent) => {
             const state = useStorageStore.getState();
@@ -60,7 +73,8 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
                 signal.throwIfAborted();
                 message.success(t(result.status === "created" ? "config.importedChannelCreated" : "config.importedChannelUpdated", { name: result.channelName }));
             }).catch(reportStorageError);
-        } else if (result.status === "missing-base-url") message.error(t("config.importedChannelBaseUrlRequired"));
+        } else if (result.status === "read-only") message.info(t("config.sharedApi.readOnly"));
+        else if (result.status === "missing-base-url") message.error(t("config.importedChannelBaseUrlRequired"));
         else message.error(t("config.importedChannelBaseUrlInvalid"));
     }, [importChannelCredentials, message, openConfigDialog, ready, t]);
 

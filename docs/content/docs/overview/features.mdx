@@ -8,7 +8,7 @@ description: Major features available in the current project
 ## Canvas projects
 
 - Create, rename, duplicate, delete, import, and export canvas projects.
-- Persist projects in the browser and optionally synchronize them with WebDAV.
+- Persist projects in the authenticated user's self-hosted application storage and optionally synchronize them with WebDAV.
 - Keep viewport, background, nodes, connections, and assistant sessions with each project.
 
 ## Infinite canvas
@@ -32,6 +32,13 @@ description: Major features available in the current project
 - Support image count, aspect ratio, quality, transparent backgrounds, reasoning effort, and custom invocation scripts.
 - Support OpenAI-style video endpoints.
 
+### Agnes built-in provider
+
+- Add Agnes with its official endpoint and six Flash model presets, then enter a key and select the model without replacing existing defaults or saved invocation scripts.
+- Use Responses for plain text, Chat Completions for image questions, and the Agnes JSON image protocol for generation and original-image editing.
+- Create text-to-video tasks with `video_id` and resume them through the root `/agnesapi` endpoint after refresh; unsupported settings and a full free queue fail explicitly without automatic retries or paid-model fallback.
+- Private video references are not supported. Pricing follows Agnes rather than a permanent free-use promise; detailed limits and integration regressions remain in [Pending Tests](/docs/progress/pending-test).
+
 ## Canvas Agent
 
 - Connect local Codex through Canvas Agent and MCP without giving a web server direct access to browser state.
@@ -50,18 +57,18 @@ Canvas plugins can contribute node types, rendering, inspectors, serialization, 
 - Use seven built-in prompt sources from the [Image Prompts](https://github.com/yukkcat/image-prompts) registry, with independent enablement, manual refresh, and scheduled refresh.
 - Add, edit, and remove custom standard JSON sources while retaining the last successful cache when refresh fails.
 - Search across enabled sources, filter by tags, inspect prompt details, copy prompts, and insert them into the canvas.
-- Store reusable images, videos, audio, and prompt assets in the browser.
+- Store reusable images, videos, audio, and prompt assets in each user's private application storage.
 
 See [Third-party Prompt Sources](/docs/overview/third-party-prompt-repositories) for the complete built-in list.
 
 ## Configuration and synchronization
 
 - Export and import channel, model, generation, prompt-source, and WebDAV settings.
-- Store application data and API credentials locally in the browser.
+- Persist application data and API credentials in server SQLite and private media directories. Administrators manage shared providers; members keep separate creative data and preferences.
 - Use WebDAV for optional cross-device synchronization.
 
 ## Current limitations
 
-- The project is frontend-first and does not provide built-in cloud accounts or cloud storage.
-- API keys remain in browser storage and requests are sent directly to configured providers.
+- Accounts and storage belong to the self-hosted application, not a hosted cloud service.
+- API keys are stored on the server but remain readable by authenticated member browsers for direct provider requests; keep accounts, plugins, and backups trusted.
 - Production Docker static-resource paths still require broader deployment verification.

@@ -4,7 +4,7 @@
 
 Applies to `server/`, the same-origin browser API/record adapters, auth hydration, media consumers, Docker/env wiring, `.github/workflows/docker-image.yml`, and the root Compose image. Read this before changing authentication, records, media identity, cleanup, or deployment. Node 24 + Express 5 + better-sqlite3 + Argon2id + multer + Zod own standard parsing/storage/security primitives.
 
-This is one self-hosted administrator, not registration, roles, credits, an AI gateway, or hosted cloud sync. The optional local Agent/proxy keep independent protocols and history; all-image cleanup must never touch local Agent storage. Runtime acceptance is pending, and checks/builds/commits require explicit user instruction.
+This is one self-hosted administrator with administrator-created member accounts. Members share the administrator's API providers and model catalog but keep independent business data, media, preferences, and WebDAV credentials. There is no public registration, credits, AI gateway, or hosted cloud sync. The optional local Agent/proxy keep independent protocols and history; all-image cleanup must never touch local Agent storage. Runtime acceptance is pending, and checks/builds/commits require explicit user instruction.
 
 ## 2. Signatures
 
@@ -13,8 +13,12 @@ This is one self-hosted administrator, not registration, roles, credits, an AI g
 | Method/path | Input or behavior |
 | --- | --- |
 | `POST /api/auth/login` | JSON `{ username: string, password: string }` |
-| `GET /api/auth/session` | `{ user: AdminUser | null }` |
+| `GET /api/auth/session` | `{ user: AppUser | null }` |
 | `DELETE /api/auth/session` | Revoke session; 204, repeatable |
+| `GET /api/accounts` | Administrator-only member list; never returns password hashes |
+| `POST /api/accounts` | Administrator-only `{ username, password }`; creates a member with a server-generated UUID |
+| `PUT /api/accounts/:id` | Administrator-only `{ password?, disabled? }`; password reset or disabling revokes member sessions |
+| `GET /api/shared-api-config` | Authenticated, allowlisted API fields from the administrator's configuration |
 | `GET /api/records/:namespace` | Collection snapshot and revision |
 | `GET /api/records/:namespace/:key` | Record value and revision |
 | `PUT /api/records/:namespace/:key` | JSON `{ value: unknown }`, `If-Match` |
@@ -47,13 +51,17 @@ All business/media routes require a valid session, including resource misses. Pu
 ```text
 admin(id = 1, username, password_hash)
 sessions(token_hash PRIMARY KEY, expires_at)
+members(id UUID PRIMARY KEY, username UNIQUE, password_hash, disabled)
+member_sessions(token_hash PRIMARY KEY, member_id REFERENCES members(id), expires_at)
 store_revisions(namespace PRIMARY KEY, revision)
 records(namespace, key, value JSON-text-or-SQL-NULL, revision; PRIMARY KEY(namespace, key))
 media(key PRIMARY KEY, kind, path, preview_path, mime_type, bytes,
       preview_bytes, preview_version, revision, status)
 ```
 
-`saveRecord(namespace, key, value, expected, deleted?)` and `replaceRecords(namespace, items, expected)` are SQLite transactions. Deletion keeps record revisions; replacement has no observable empty intermediate collection.
+`storageForUser(id)` returns a `UserStorage` selected only from the authenticated user ID. The administrator (`id = "1"`) keeps the root SQLite database and media directories. Members use `DATA_DIR/users/<UUID>/` with independent SQLite databases and media directories; their databases contain only business tables. No administrator data relocation or schema rewrite is required. All routes, file usage, original/preview/Range reads, uploads, references, and image cleanup use `res.locals.storage`; never accept a storage owner from request parameters.
+
+`storage.saveRecord(namespace, key, value, expected, deleted?)` and `storage.replaceRecords(namespace, items, expected)` are SQLite transactions. Deletion keeps record revisions; replacement has no observable empty intermediate collection.
 
 `web/src/lib/server-storage.ts` exports `serverStateStorage` and `createServerRecordStorage(namespace)` with `getItem`, `setItem`, `removeItem`, `iterate`, `snapshot()`, and `replace(items, revision)`. `use-user-store.ts` owns restore/login/logout/load/cleanup/flush; `server.ts` owns session signal/epoch and media metadata caches.
 
@@ -64,7 +72,7 @@ media(key PRIMARY KEY, kind, path, preview_path, mime_type, bytes,
 JSON successes use `{ data: T }`, except 204; errors use `{ error: { code: string, message: string } }`. Session absence is a successful `{ data: { user: null } }` only on the session-check route, not on private reads or service failure.
 
 ```ts
-type AdminUser = { id: string; username: string };
+type AppUser = { id: string; username: string; role: "admin" | "member" };
 type ServerRecord = { key: string; value: unknown | null; revision: number; deleted?: boolean };
 type ServerRecords = { revision: number; records: ServerRecord[] };
 type ServerMedia = {
@@ -82,13 +90,19 @@ Namespaces: `app_state`, `image_generation_logs`, `video_generation_logs`, `prom
 
 Session cookies are opaque random tokens, HttpOnly, SameSite=Strict, path `/api`, Secure when configured origin is HTTPS. SQLite stores SHA-256 token digests and fixed expiry; passwords use Argon2id. Every write requires the exact configured Origin; no wildcard CORS or blindly trusted forwarding headers. Auth happens before private body parsing/file reads, and uploads/parsed JSON writes revalidate the session before commit.
 
+Protected browser requests bind `X-Canvas-User` to the user who hydrated that tab. The header is required for authenticated writes and logout; direct image/media GET requests may omit it. Missing write bindings or a cookie for another account return 401 `SESSION_CHANGED` without clearing the other account's cookie, including on logout. Revalidate the administrator session after asynchronous password hashing, and re-read account credentials after asynchronous login verification so resets/disabling cannot be bypassed by an in-flight login.
+
+The shared API endpoint uses an explicit Zod projection for providers, keys, model catalogs/scripts, and initial default models. It never exposes WebDAV, prompt sources, or unrelated administrator preferences. Member hydration must load this endpoint successfully before enabling writes. Provider fields are read-only in the member UI and omitted from member config persistence. Refresh on login/page load/window focus or the explicit refresh button; personal default model selections remain independent and removed selections must not silently switch providers. Shared keys remain readable by members' browsers, and disabling a login cannot revoke keys already obtained from a provider.
+
+`server/src/shared-api-config.ts` accepts `openai`, `gemini`, and `agnes` for both the top-level `apiFormat` and every `channels[].apiFormat`. Extend this Zod enum together with the frontend provider type: accepting a provider only in the browser makes member hydration fail with `400 INVALID_REQUEST`. Preserve the explicit projection rather than returning the administrator's whole record.
+
 Business stores use `skipHydration`; writes stay disabled until all private state loads successfully. No business IndexedDB/localStorage fallback, automatic migration, or deletion of old browser databases. Capture the original session signal before async work; after awaits, recheck before new requests, revisions/cache updates, writes, plugin imports/factories, and activation. Reset aborts old work before clearing memory, queues, prompt refresh maps, plugins, query caches, and object URLs.
 
 Persistent media identity is `storageKey`, not `blob:` URLs. Empty persisted `content`/`dataUrl` still hydrates by key. Downloads, references, edits, ZIP, and WebDAV read originals; previews retain the existing browser 768px/WebP 0.86 strategy and are not backup originals. Original download/decode/storage failure rejects instead of producing a fake saved resource.
 
 ### Cleanup
 
-Media status is `active`, `clearing`, or `cleared`; the latter two expose `cleared: true`. Cleanup flushes client writes, marks the selected saved images as clearing, normalizes record references/revisions transactionally, then removes managed original/preview files. It includes orphaned image/preview files but excludes in-flight uncommitted destinations. Leftover files remain counted and may be removed by a later manual cleanup, not an automatic retry loop.
+Media status is `active`, `clearing`, or `cleared`; the latter two expose `cleared: true`. Cleanup applies only to the authenticated user's database and directories. It flushes client writes, marks the selected saved images as clearing, normalizes record references/revisions transactionally, then removes managed original/preview files. It includes orphaned image/preview files but excludes in-flight uncommitted destinations, tracked by absolute path across accounts. Leftover files remain counted and may be removed by a later manual cleanup, not an automatic retry loop.
 
 Completed tombstones retain the old key but clear paths/bytes. Save normalization removes cleared image URLs/covers and temporary object URLs while keeping structure, prompts, account/configuration, text, video/audio, and local Agent history. Tombstones cannot be overwritten by upload, old JSON, or WebDAV. Other already-open clients must refresh; revision conflicts do not automatically merge whole documents.
 
@@ -122,6 +136,9 @@ SQLite API/WebDAV credentials are not encrypted by the administrator password ha
 | Aborted upload before commit | 400 `UPLOAD_ABORTED` | Remove uncommitted temporary/destination files |
 | Wrong username/password | 401 `INVALID_CREDENTIALS` | No created session; do not distinguish account existence |
 | Private request with absent/expired/revoked session | 401 `UNAUTHORIZED` | No private access; frontend cancels old-session work |
+| Tab user differs from cookie user | 401 `SESSION_CHANGED` | Reject stale reads/writes/logout; preserve the new account's cookie |
+| Member requests account management | 403 `ADMIN_REQUIRED` | No member listing or credential changes |
+| Username duplicates administrator or another member | 409 `USERNAME_TAKEN` | No account created |
 | Write Origin mismatch | 403 `INVALID_ORIGIN` | Reject write, including login/logout |
 | Unknown API or absent original/preview | 404 `NOT_FOUND` / `MEDIA_NOT_FOUND` | No stale URL fallback |
 | Revision differs from original snapshot | 409 `STORAGE_CONFLICT` | Preserve authority; user reload required |
@@ -159,6 +176,7 @@ These are assertion points for user-authorized validation, not checks already ru
 6. ZIP: cleared state exports without files or old URLs; missing non-cleared originals fail export; missing declared files fail import; explicit originals receive new keys and nested/cover/reference remapping, including repeated keys and cleared-only packages.
 7. Deployment/limits: strong first-start credentials, Node native dependencies, non-root writable volume, SQLite associated files across restart/update, SPA/plugin/config/media routes, exact HTTPS origin/Secure cookie, approved 7-day/512 MiB/32 MiB defaults, and no login throttling or unapproved limits.
 8. Image publication: the run's `headSha` matches the pushed commit, both architecture jobs and merge succeed, and `latest`/`main`/short-SHA resolve to the same combined digest containing linux/amd64 and linux/arm64. Version-tag/manual behavior and tooling-only skip remain assertion points; do not create a release tag just to test them. Build success does not replace item 7.
+9. Multiple accounts: member creation/reset/disable, shared API allowlist and refresh, independent preferences/default models, identical keys in separate records/media stores, member-only cleanup/usage/ZIP/WebDAV, and stale-tab writes/logout after another account signs in. Keep existing administrator records and media intact through deployment and image rollback.
 
 ## 7. Wrong vs Correct
 

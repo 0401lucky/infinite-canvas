@@ -7,7 +7,9 @@ description: Implemented changes that still need manual verification
 
 ## Agnes Built-In Provider
 
-The approved provider, image/text compatibility, and text-to-video task flow are implemented. After the initial source/spec review, the user explicitly authorized Docker Desktop startup and testing. An isolated local `linux/amd64` image builds successfully, and the Agnes contract suite passes **17 tests / 93 assertions**. No syntax/type/lint checks, formatting, Git commits, or remote deployment ran.
+The user reported that Agnes testing passed and approved integration and publication to `main`; the base feature is now described in [Features](/docs/overview/features). The earlier authorized Docker run built an isolated `linux/amd64` image and passed **17 tests / 93 assertions**. Those results predate integration with member accounts; no syntax/type/lint checks, tests, formatting, or builds were run again for this merge.
+
+Integration regression still to verify: an administrator can add/edit/import Agnes providers while members retain only shared-config refresh and personal model selections. `/api/shared-api-config` must accept `agnes` both at the top level and in each provider without exposing private administrator preferences. Member hydration/refresh must retain Agnes, preserve removed selections without fallback, keep an empty shared catalog empty, and exclude shared keys/providers from member persistence. Three regression cases were added and session fixtures now use account IDs; these updated tests have not been run.
 
 Verified locally in independent Chrome:
 
@@ -16,7 +18,7 @@ Verified locally in independent Chrome:
 - Simulated Responses/Chat SSE and Chat JSON output, `xhigh → max`, three image slots with partial failure and one-slot manual retry, original image proportions/downloads, and two private original references in image editing.
 - Simulated video queue-full/no retry, `video_id`/root-query identity, refresh recovery, protocol-mismatch blocking without losing the task, private-reference rejection, and logout stopping polling/old-session writes. Private video save/refresh/playback uses a public CC0 test clip, **not an Agnes-generated video**.
 
-Desktop-dark and mobile-light drawers render within their viewports; full mobile usability still needs confirmation because model names truncate in the existing compact rows. These simulated provider replies do not prove actual Agnes generation or authenticated-provider/media CORS. The supplied protected credential reference cannot be resolved in this environment; no real Agnes generation request ran, and only a test marker is stored in the isolated application configuration.
+Desktop-dark and mobile-light drawers rendered within their viewports in that Docker run; full mobile usability still needs confirmation because model names truncate in the existing compact rows. Those simulated provider replies do not prove actual Agnes generation or authenticated-provider/media CORS. The credential reference could not be resolved during that run, so it made no real Agnes generation requests and stored only a test marker. The user's subsequent acceptance is separate from those automated results.
 
 - Provider setup: **Add provider → Agnes (Built-in)** should prefill the read-only official endpoint and the six currently free Flash models. Enter a key, then select an Agnes model in the existing picker; existing defaults and canvas selections must stay unchanged. Only explicitly switching an old provider to Agnes enables its rules, preserving its key, models, and scripts; an empty model list is seeded only during that explicit switch. Refresh and settings JSON import/export should preserve `agnes`, and deleted providers/models must not be replenished. Promotions and billing remain determined by Agnes, not a permanent free-use promise.
 - Video creation: the Flash text-to-video request should be JSON with `mode: "text"`, uppercase `720P`, `aspect_ratio`, and a 4–12 second duration; the default remains six seconds and the global slider remains 4–30. Unsupported resolution/duration/audio/watermark settings should fail clearly, without truncation, downgrade, or paid-model fallback. `video_queue_full` should show a manual-retry message and create no task or automatic retry. Connected reference images, video, or audio must block creation without exposing private media or silently dropping references.
@@ -27,9 +29,16 @@ Desktop-dark and mobile-light drawers render within their viewports; full mobile
 
 Also verify that a new installation without saved configuration retains its original default provider, while importing and saving an explicitly empty provider list keeps it empty after refresh instead of reconstructing providers/models from old flat fields.
 
-Earlier research verified pure-text Responses and vision Chat for 2.5/3.0 Flash, a decodable generated/edited image, and basic CORS preflight plus a readable browser 401. That earlier free-video queue returned 503 without a task; it was not called again in this Docker run. Real Agnes text/vision/image output, Chat `max` behavior, the actual video creation/query/download/refresh loop, production-origin CORS, live proxy/other-provider regression, and remaining cancellation/storage-failure scenarios still need acceptance. Detailed sanitized evidence and probe limitations are in the current Trellis task's `research/docker-validation.md`; the task remains `in_progress`.
+Earlier research verified pure-text Responses and vision Chat for 2.5/3.0 Flash, a decodable generated/edited image, and basic CORS preflight plus a readable browser 401. That earlier free-video queue returned 503 without a task; it was not called again in the Docker run. The user's acceptance did not enumerate individual model results, Chat `max` behavior, the full video lifecycle, production-origin CORS, live proxy/other-provider regression, or remaining cancellation/storage-failure scenarios; keep those targeted cases rather than treating every boundary as verified. Sanitized historical evidence is in `.trellis/tasks/11-02-agnes-api-compatibility/research/docker-validation.md`; transient browser/controller files remain local and are not part of the Git submission.
 
 ## Other Pending Changes
+
+- 小型多用户：管理员从「配置与用户偏好 → 成员账号」创建账号、重置密码和停用/启用账号；重名应拒绝，停用或重置密码后旧会话应失效，成员不能调用账号管理接口。
+- 共享 API：成员首次登录直接继承管理员的渠道、密钥、模型目录、调用脚本和默认模型；管理员修改后，成员重新登录、刷新页面、返回窗口或点击「刷新共享配置」应取得最新配置。成员可单独选择默认模型，已移除的选择不能静默切换到其他渠道；渠道为空或共享配置加载失败时不能当作已经配置成功。
+- 账号数据隔离：用两个独立浏览器登录，分别保存画布、素材、生成历史、提示词来源、插件数据、WebDAV 和偏好；尝试读取另一账号的媒体键、原图、缩略图和视频 Range，应无法取得对方内容。清空图片、统计空间、ZIP 导入和 WebDAV 同步仅作用于当前账号，管理员原数据仍保存在原目录。
+- 共享边界：成员的共享配置响应只含 API 相关字段，不能出现管理员 WebDAV 凭据、提示词或其他个人偏好；成员自己的持久化配置不重复保存共享渠道和密钥。共享密钥对已登录成员浏览器可见，停用账号不等于撤销已读取的提供商密钥。
+- 切换账号：同一浏览器中先打开账号 A，再在另一标签页登录账号 B；A 的旧页面继续保存、上传或退出时应收到账号切换提示，不能把旧数据写入 B 或退出 B 的会话。
+- 已获授权的验证：双架构镜像构建成功；独立环境通过 161 项接口断言，覆盖账号管理权限、共享 API 白名单与更新、各记录命名空间隔离、版本冲突、跨账号写入与退出、媒体/预览/Range、图片清理和密码重置。正式镜像的数据保留与静态资源检查、部署前后原管理员数据和媒体指纹比对、成员登录及共享配置检查也已通过。自动浏览器验收受企业网络策略限制，页面交互和上述尚未覆盖的手工场景仍需用户确认。
 
 - Trellis development workflow: start a new Codex session and invoke `trellis-start`; confirm developer `0401lucky` and discovery of the frontend, local-service, plugin, and documentation specs. Implementation should stay inline, with no automatic syntax/type checks, tests, builds, or Git commits, including during task archival and journal recording. Native hooks still require host-side enablement and approval; manual skill startup should remain available without them.
 
