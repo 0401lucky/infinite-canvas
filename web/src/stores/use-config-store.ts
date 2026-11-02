@@ -7,7 +7,7 @@ import i18n from "@/i18n";
 import { serverStateStorage } from "@/lib/server-storage";
 import { serverSessionEpoch } from "@/services/api/server";
 
-export type ApiCallFormat = "openai" | "gemini";
+export type ApiCallFormat = "openai" | "gemini" | "agnes";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 export type ReasoningEffort = "auto" | "low" | "medium" | "high" | "xhigh";
 
@@ -78,6 +78,15 @@ export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://api.openai.com";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
+export const AGNES_BASE_URL = "https://apihub.agnes-ai.com";
+export const AGNES_FLASH_MODELS: ChannelModel[] = [
+    { name: "agnes-2.5-flash", capability: "text" },
+    { name: "agnes-3.0-flash", capability: "text" },
+    { name: "agnes-image-2.0-flash", capability: "image" },
+    { name: "agnes-image-2.1-flash", capability: "image" },
+    { name: "agnes-image-2.5-flash", capability: "image" },
+    { name: "agnes-video-2.5-flash", capability: "video" },
+];
 export const LOCAL_PROXY_PACKAGE = "@basketikun/canvas-proxy";
 export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
 
@@ -263,7 +272,7 @@ export const useConfigStore = create<ConfigStore>()(
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
                 const persistedWebdav = (persistedState.webdav || {}) as Partial<WebdavSyncConfig>;
                 const config = { ...defaultConfig, ...persistedConfig };
-                if (!Array.isArray(persistedConfig.channels)) config.channels = [];
+                if (persistedState.config && !Array.isArray(persistedConfig.channels)) config.channels = [];
                 const channels = normalizeChannels(config);
                 const models = modelOptionsFromChannels(channels);
                 return {
@@ -326,7 +335,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
     return {
         id: channel?.id?.trim() || nanoid(),
         name: channel?.name?.trim() || i18n.t("config.channels.newName"),
-        baseUrl: channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat),
+        baseUrl: apiFormat === "agnes" ? AGNES_BASE_URL : channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat),
         apiKey: channel?.apiKey || "",
         apiFormat,
         models: normalizeChannelModels(channel?.models),
@@ -450,7 +459,7 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
     return {
         ...config,
         model: modelOptionName(value || config.model),
-        baseUrl: channel.baseUrl,
+        baseUrl: channel.apiFormat === "agnes" ? AGNES_BASE_URL : channel.baseUrl,
         apiKey: channel.apiKey,
         apiFormat: channel.apiFormat,
     };
@@ -458,7 +467,7 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
 
 function normalizeChannels(config: AiConfig) {
     const persistedChannels = Array.isArray(config.channels) ? config.channels : [];
-    const channels = persistedChannels.map((channel, index) =>
+    return persistedChannels.map((channel, index) =>
         createModelChannel({
             ...channel,
             id: channel.id || (index === 0 ? "default" : `channel-${index + 1}`),
@@ -466,28 +475,16 @@ function normalizeChannels(config: AiConfig) {
             models: normalizeChannelModels(channel.models),
         }),
     );
-    if (!channels.length) {
-        channels.push(
-            createModelChannel({
-                id: "default",
-                name: i18n.t("config.channels.defaultName"),
-                baseUrl: config.baseUrl || defaultConfig.baseUrl,
-                apiKey: config.apiKey || "",
-                apiFormat: config.apiFormat || defaultConfig.apiFormat,
-                models: normalizeChannelModels([config.model, config.imageModel, config.videoModel, config.textModel, config.audioModel].map(modelOptionName)),
-            }),
-        );
-    }
-    return channels;
 }
 
 export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
     if (apiFormat === "gemini") return GEMINI_BASE_URL;
+    if (apiFormat === "agnes") return AGNES_BASE_URL;
     return OPENAI_BASE_URL;
 }
 
 function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
-    return apiFormat === "gemini" ? apiFormat : "openai";
+    return apiFormat === "gemini" || apiFormat === "agnes" ? apiFormat : "openai";
 }
 
 function uniqueModelOptions(models: string[]) {

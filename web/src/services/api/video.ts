@@ -7,7 +7,8 @@ import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/medi
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { serverSessionSignal } from "@/services/api/server";
-import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
+import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, useConfigStore, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
+import { agnesVideoQueryUrl, agnesVideoQueueError, agnesVideoTaskId, agnesVideoTaskState, buildAgnesVideoBody, type AgnesVideoResponse } from "./agnes";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -20,7 +21,7 @@ type VideoMediaOptions = RequestOptions & { videos?: ReferenceVideo[]; audios?: 
 const apiText = (key: string, options?: Record<string, unknown>) => i18n.t(`apiErrors.${key}`, options);
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
-export type VideoGenerationTask = { id: string; provider: "openai" | "gemini" | "plugin"; model: string };
+export type VideoGenerationTask = { id: string; provider: "openai" | "gemini" | "agnes" | "plugin"; model: string };
 type GeminiInlineData = { bytesBase64Encoded: string; mimeType: string };
 type GeminiVideoOperation = {
     name?: string;
@@ -82,6 +83,8 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     const script = resolveModelScript(config, selectedModel);
     if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
     assertVideoConfig(requestConfig, requestConfig.model);
+    if (!useConfigStore.getState().isAiConfigReady(config, selectedModel)) throw new Error(apiText("videoModelUnavailable"));
+    if (requestConfig.apiFormat === "agnes") return createAgnesVideoTask(requestConfig, selectedModel, prompt, references, options);
     if (requestConfig.apiFormat === "gemini") return createGeminiVideoTask(requestConfig, selectedModel, prompt, references, options);
     return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, options);
 }
@@ -96,6 +99,9 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
     }
     const requestConfig = resolveModelRequestConfig(config, task.model);
     assertVideoConfig(requestConfig, requestConfig.model);
+    if (!useConfigStore.getState().isAiConfigReady(config, task.model)) throw new Error(apiText("videoModelUnavailable"));
+    if (requestConfig.apiFormat !== task.provider) throw new Error(apiText("videoTaskProviderMismatch"));
+    if (task.provider === "agnes") return pollAgnesVideoTask(requestConfig, task, options);
     if (task.provider === "gemini") return pollGeminiVideoTask(requestConfig, task, options);
     return pollOpenAIVideoTask(requestConfig, task, options);
 }
@@ -145,10 +151,37 @@ function videoPluginResult(result: unknown): VideoGenerationResult {
     throw new Error(apiText("scriptNoVideo"));
 }
 
-export async function storeGeneratedVideo(result: VideoGenerationResult): Promise<UploadedFile> {
-    if (result.blob) return uploadMediaFile(result.blob, "video");
-    if (result.url) return uploadMediaFile(result.url, "video");
+export async function storeGeneratedVideo(result: VideoGenerationResult, options?: RequestOptions): Promise<UploadedFile> {
+    const signal = serverSessionSignal(options?.signal);
+    signal.throwIfAborted();
+    if (result.blob) return uploadMediaFile(result.blob, "video", { signal });
+    if (result.url) return uploadMediaFile(result.url, "video", { signal });
     throw new Error(apiText("noPlayableVideo"));
+}
+
+async function createAgnesVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    const body = buildAgnesVideoBody(config, prompt, references.length + (options?.videos?.length || 0) + (options?.audios?.length || 0));
+    try {
+        const response = await axios.post<ApiEnvelope<AgnesVideoResponse>>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config, "application/json"), signal: options?.signal });
+        options?.signal?.throwIfAborted();
+        const created = unwrapEnvelope(response.data, apiText("noVideoTask"));
+        return { id: agnesVideoTaskId(created), provider: "agnes", model };
+    } catch (error) {
+        options?.signal?.throwIfAborted();
+        throw new Error((axios.isAxiosError(error) && agnesVideoQueueError(error.response?.data)) || readAxiosError(error, apiText("videoTaskCreateFailed")));
+    }
+}
+
+async function pollAgnesVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    try {
+        const response = await axios.get<ApiEnvelope<AgnesVideoResponse>>(withLocalProxy(agnesVideoQueryUrl(config.baseUrl, task.id, task.model)), { headers: aiHeaders(config), signal: options?.signal });
+        options?.signal?.throwIfAborted();
+        const state = agnesVideoTaskState(unwrapEnvelope(response.data, apiText("videoTaskQueryFailed")));
+        return state.status === "completed" ? { status: "completed", result: await videoResultFromUrl(state.url, options) } : state;
+    } catch (error) {
+        options?.signal?.throwIfAborted();
+        throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
+    }
 }
 
 async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {

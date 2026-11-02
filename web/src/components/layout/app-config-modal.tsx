@@ -1,4 +1,4 @@
-import { App, Button, Form, Input, Modal, Progress, Radio, Select, Switch, Tabs } from "antd";
+import { App, Button, Dropdown, Form, Input, Modal, Progress, Radio, Select, Switch, Tabs } from "antd";
 import type { TFunction } from "i18next";
 import { Cloud, Download, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -18,7 +18,7 @@ import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent }
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { computeMediaSize, inferMediaRatio, inferMediaScale, mediaScaleOptions, parseVideoResolution } from "@/lib/media-size";
-import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { AGNES_FLASH_MODELS, createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -108,9 +108,12 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
 
     const updateChannels = (channels: ModelChannel[]) => saveConfig(withChannels(config, channels));
 
-    const addChannel = () => {
-        const channel = createModelChannel({ name: t("config.channels.numberedName", { count: config.channels.length + 1 }) });
-        updateChannels([...config.channels, channel]);
+    const addChannel = (apiFormat: "openai" | "agnes") => {
+        const channel = createModelChannel(apiFormat === "agnes"
+            ? { name: "Agnes", apiFormat, models: AGNES_FLASH_MODELS }
+            : { name: t("config.channels.numberedName", { count: config.channels.length + 1 }) });
+        const channels = [...config.channels, channel];
+        saveConfig(withChannels(config, channels, true));
         setEditingChannelId(channel.id);
     };
 
@@ -123,7 +126,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     };
 
     const saveChannel = (channel: ModelChannel) => {
-        updateChannels(config.channels.map((item) => (item.id === channel.id ? channel : item)));
+        saveConfig(withChannels(config, config.channels.map((item) => (item.id === channel.id ? channel : item)), channel.apiFormat === "agnes"));
     };
 
     const testWebdav = async () => {
@@ -202,9 +205,17 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                             <div>
                                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                                     <div className="text-xs text-stone-500">{t("config.channels.description")}</div>
-                                    <Button type="primary" icon={<Plus className="size-4" />} onClick={addChannel}>
-                                        {t("config.channels.add")}
-                                    </Button>
+                                    <Dropdown trigger={["click"]} menu={{
+                                        items: [
+                                            { key: "openai", label: t("config.channels.custom") },
+                                            { key: "agnes", label: t("config.channels.agnes") },
+                                        ],
+                                        onClick: ({ key }) => addChannel(key === "agnes" ? "agnes" : "openai"),
+                                    }}>
+                                        <Button type="primary" icon={<Plus className="size-4" />}>
+                                            {t("config.channels.add")}
+                                        </Button>
+                                    </Dropdown>
                                 </div>
                                 <div className="space-y-2">
                                     {config.channels.map((channel) => (
@@ -401,7 +412,7 @@ export function AppConfigModal() {
     );
 }
 
-function withChannels(config: AiConfig, channels: ModelChannel[]): AiConfig {
+function withChannels(config: AiConfig, channels: ModelChannel[], preserveDefaults = false): AiConfig {
     const next: AiConfig = {
         ...config,
         channels,
@@ -410,6 +421,7 @@ function withChannels(config: AiConfig, channels: ModelChannel[]): AiConfig {
         apiKey: channels[0]?.apiKey || config.apiKey,
         apiFormat: channels[0]?.apiFormat || config.apiFormat,
     };
+    if (preserveDefaults) return next;
     return {
         ...next,
         imageModel: pickDefaultModel(next, "image", config.imageModel),
@@ -431,6 +443,7 @@ function normalizeImageCount(value: string) {
 
 function apiFormatLabel(apiFormat: ApiCallFormat) {
     if (apiFormat === "gemini") return "Gemini";
+    if (apiFormat === "agnes") return "Agnes";
     return "OpenAI";
 }
 

@@ -1,8 +1,9 @@
 import axios from "axios";
 
 import i18n from "@/i18n";
-import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { AGNES_BASE_URL, buildApiUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
+import { agnesUsesChat, buildAgnesChatBody, buildAgnesImageBody } from "./agnes";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
@@ -66,6 +67,7 @@ type ResponseApiPayload = {
     id?: string;
     output?: ResponseApiOutputItem[];
     output_text?: string;
+    choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }>;
     error?: { message?: string };
     code?: number;
     msg?: string;
@@ -345,7 +347,7 @@ function geminiHeaders(config: Pick<AiConfig, "apiKey">) {
     };
 }
 
-function withSystemMessage<T extends ResponseInputMessage>(config: AiConfig, messages: T[]): ResponseInputMessage[] {
+function withSystemMessage<T extends ResponseInputMessage>(config: AiConfig, messages: T[]): Array<T | AiTextMessage> {
     const systemPrompt = config.systemPrompt.trim();
     return systemPrompt ? [{ role: "system" as const, content: systemPrompt }, ...messages] : messages;
 }
@@ -376,6 +378,7 @@ function toResponseTool(tool: ResponseFunctionTool): ResponseApiToolDefinition {
 function parseToolResponse(payload: ResponseApiPayload): ToolResponseResult {
     const output = payload.output || [];
     const content =
+        payload.choices?.map((choice) => stringValue(choice.message?.content)).join("") ||
         payload.output_text ||
         output
             .flatMap((item) => (item.type === "message" ? item.content || [] : []))
@@ -401,7 +404,7 @@ function responseErrorMessage(value: unknown) {
     const error = isRecord(value.error) ? value.error : undefined;
     const response = isRecord(value.response) ? value.response : undefined;
     const responseError = response && isRecord(response.error) ? response.error : undefined;
-    return stringValue(value.msg) || stringValue(error?.message) || stringValue(responseError?.message);
+    return stringValue(value.msg) || stringValue(value.message) || stringValue(value.error) || stringValue(error?.message) || stringValue(responseError?.message);
 }
 
 function stringValue(value: unknown) {
@@ -440,6 +443,14 @@ function consumeResponseStreamBlock(block: string, state: ResponseStreamState, o
     const type = stringValue(event.type);
     const errorMessage = responseErrorMessage(event);
     if (errorMessage) state.error = errorMessage;
+    if (Array.isArray(event.choices)) {
+        state.payload = event as ResponseApiPayload;
+        const delta = state.payload.choices?.map((choice) => stringValue(choice.delta?.content)).join("") || "";
+        if (delta) {
+            state.text += delta;
+            onDelta?.(state.text);
+        }
+    }
     if (type === "response.output_text.delta" && typeof event.delta === "string") {
         state.text += event.delta;
         onDelta?.(state.text);
@@ -470,31 +481,47 @@ function consumeResponseStreamText(state: ResponseStreamState, text: string, onD
     }
 }
 
-async function requestStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
-    const response = await fetch(aiApiUrl(config, "/responses"), {
+async function requestStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions, path = "/responses"): Promise<ToolResponseResult> {
+    options?.signal?.throwIfAborted();
+    const emitDelta = (text: string) => {
+        options?.signal?.throwIfAborted();
+        onDelta?.(text);
+    };
+    const response = await fetch(aiApiUrl(config, path), {
         method: "POST",
         headers: { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" },
         body: JSON.stringify({ ...body, stream: true }),
         signal: options?.signal,
     });
+    options?.signal?.throwIfAborted();
     if (!response.ok) throw new Error(await readFetchError(response, apiText("requestFailed")));
-    if (!response.body) {
+    if (!response.body || (path === "/chat/completions" && response.headers.get("content-type")?.includes("json"))) {
         const payload = (await response.json()) as ResponseApiPayload;
+        options?.signal?.throwIfAborted();
         validateResponsePayload(payload);
-        return parseToolResponse(payload);
+        const result = parseToolResponse(payload);
+        if (path === "/chat/completions" && result.content) emitDelta(result.content);
+        options?.signal?.throwIfAborted();
+        return result;
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const state: ResponseStreamState = { buffer: "", text: "" };
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        consumeResponseStreamText(state, decoder.decode(value, { stream: true }), onDelta);
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            options?.signal?.throwIfAborted();
+            if (done) break;
+            consumeResponseStreamText(state, decoder.decode(value, { stream: true }), emitDelta);
+            if (state.error) throw new Error(state.error);
+        }
+        consumeResponseStreamText(state, decoder.decode(), emitDelta, true);
+        options?.signal?.throwIfAborted();
         if (state.error) throw new Error(state.error);
+    } finally {
+        reader.releaseLock();
     }
-    consumeResponseStreamText(state, decoder.decode(), onDelta, true);
-    if (state.error) throw new Error(state.error);
     if (!state.payload) return { content: state.text, toolCalls: [] };
     validateResponsePayload(state.payload);
     const result = parseToolResponse(state.payload);
@@ -692,6 +719,19 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
     return images;
 }
 
+async function requestAgnesImages(config: AiConfig, prompt: string, references: ReferenceImage[], count: number, options?: RequestOptions) {
+    const images = await Promise.all(references.map((image) => imageToDataUrl(image, options)));
+    options?.signal?.throwIfAborted();
+    const body = buildAgnesImageBody(config, withSystemPrompt(config, prompt), images);
+    const requests = Array.from({ length: count }, async () => {
+        options?.signal?.throwIfAborted();
+        const response = await axios.post<ImageApiResponse>(aiApiUrl(config, "/images/generations"), body, { headers: aiHeaders(config, "application/json"), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
+        options?.signal?.throwIfAborted();
+        return parseImagePayload(response.data);
+    });
+    return (await Promise.all(requests)).flat();
+}
+
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
     const signal = serverSessionSignal(options?.signal);
     signal.throwIfAborted();
@@ -715,6 +755,14 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
             });
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
+            throw new Error(readAxiosError(error, apiText("requestFailed")));
+        }
+    }
+    if (requestConfig.apiFormat === "agnes") {
+        try {
+            return await requestAgnesImages(requestConfig, prompt, [], n, options);
+        } catch (error) {
+            signal.throwIfAborted();
             throw new Error(readAxiosError(error, apiText("requestFailed")));
         }
     }
@@ -780,6 +828,14 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
             });
             return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
+            throw new Error(readAxiosError(error, apiText("requestFailed")));
+        }
+    }
+    if (requestConfig.apiFormat === "agnes") {
+        try {
+            return await requestAgnesImages(requestConfig, requestPrompt, references, n, options);
+        } catch (error) {
+            signal.throwIfAborted();
             throw new Error(readAxiosError(error, apiText("requestFailed")));
         }
     }
@@ -854,6 +910,11 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
             if (answer === apiText("noContent")) onDelta(answer);
             return answer;
         }
+        if (requestConfig.apiFormat === "agnes" && agnesUsesChat(messages)) {
+            const answer = (await requestStreamingResponse(requestConfig, buildAgnesChatBody(requestConfig, withSystemMessage(requestConfig, messages)), onDelta, options, "/chat/completions")).content || apiText("noContent");
+            if (answer === apiText("noContent")) onDelta(answer);
+            return answer;
+        }
         const answer = (await requestStreamingResponse(requestConfig, {
             model: requestConfig.model,
             input: toResponseInput(withSystemMessage(requestConfig, messages)),
@@ -862,6 +923,7 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
         if (answer === apiText("noContent")) onDelta(answer);
         return answer;
     } catch (error) {
+        signal.throwIfAborted();
         throw new Error(readAxiosError(error, apiText("requestFailed")));
     }
 }
@@ -878,7 +940,7 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
                 .filter((id): id is string => Boolean(id))
                 .sort((a, b) => a.localeCompare(b));
         }
-        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.baseUrl, "/models"), {
+        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.apiFormat === "agnes" ? AGNES_BASE_URL : config.baseUrl, "/models"), {
             signal,
             headers: {
                 Authorization: `Bearer ${config.apiKey}`,

@@ -351,7 +351,7 @@ export default function VideoPage() {
                 const state = await pollVideoGenerationTask(configOverride || taskConfig, log.task, { signal });
                 signal.throwIfAborted();
                 if (state.status === "completed") {
-                    const stored = await storeGeneratedVideo(state.result);
+                    const stored = await storeGeneratedVideo(state.result, { signal });
                     signal.throwIfAborted();
                     const nextVideo: GeneratedVideo = {
                         id: nanoid(),

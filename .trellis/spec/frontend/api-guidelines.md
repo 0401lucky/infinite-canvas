@@ -23,3 +23,62 @@ Keep image/media persistence in the existing storage services. A successful HTTP
 The optional `canvas-proxy/` only forwards requests for CORS workarounds. It is not an application API or credential database.
 
 Before adding/changing timeouts, retry counts, size limits, or concurrency, explain the affected operation, default, and failure behavior and obtain user confirmation. Never log API keys, Authorization headers, or full sensitive payloads.
+
+## Agnes Provider Contract
+
+### 1. Scope / Trigger
+
+Agnes compatibility is selected only by the channel's explicit `apiFormat: "agnes"`. `use-config-store.ts` owns the official `AGNES_BASE_URL` and six Flash presets; `agnes.ts` owns provider-specific bodies, validations and task URLs. The existing image/video services own HTTP/SSE and private persistence. Never infer the protocol from a hostname/model name or seed models during hydration. Saved empty channel/model lists stay empty, without reconstruction from flat legacy fields; a genuinely new installation with no saved configuration retains `defaultConfig.channels`. Custom scripts retain priority.
+
+### 2. Signatures
+
+`ApiCallFormat` includes `agnes`; `VideoGenerationTask.provider` and `CanvasNodeMetadata.videoTaskProvider` also include `agnes`. Creation stores Agnes `video_id` in the existing `id` / `videoTaskId` fields and retains the encoded model/channel identity. No storage-version change or migration is required.
+
+```ts
+declare function buildAgnesVideoBody(config: AiConfig, prompt: string, referenceCount?: number): Record<string, unknown>;
+declare function agnesVideoQueryUrl(baseUrl: string, id: string, model: string): string;
+declare function buildAgnesImageBody(config: AiConfig, prompt: string, images?: string[]): Record<string, unknown>;
+declare function buildAgnesChatBody(config: AiConfig, messages: AiTextMessage[]): Record<string, unknown>;
+declare function storeGeneratedVideo(result: VideoGenerationResult, options?: { signal?: AbortSignal }): Promise<UploadedFile>;
+```
+
+### 3. Contracts
+
+| Capability | Request | Response / continuation |
+| --- | --- | --- |
+| Text | Pure text retains `/v1/responses`; messages containing `image_url` use `/v1/chat/completions`, with system/history unchanged | Reuse the existing SSE reader for `choices[].delta.content`, cumulative callbacks, and JSON `choices[].message.content`; Chat `auto` omits effort, `xhigh` maps to `max`, other approved efforts stay unchanged |
+| Image | JSON `/v1/images/generations`, always `n: 1`; generation uses `return_base64: true`; editing uses original Data URIs in `extra_body.image` and nested `response_format: "b64_json"` | No `output_format`, top-level `response_format`, quality/background extensions; existing slot/count behavior and decoded original proportions remain authoritative |
+| Video | JSON `/v1/videos` with `model`, `prompt`, `seconds`, `size: "720P"`, `aspect_ratio`, `mode: "text"` | Require `video_id`, then root `/agnesapi?video_id=...&model_name=...`; only `completed` uses top-level `url`; no ID/URL fallback to different fields |
+
+Known image presets become `1K`/`2K`/`4K` with their ratio; auto becomes `1K` without a ratio. Custom pixels remain exact request values and may be normalized upstream. Agnes rejects explicit quality/background or unsupported ratios rather than dropping intent. Video keeps the six-second default, accepts only integer 4–12 seconds and supported 720P settings, and uses model-default audio/watermark behavior; unsupported independent settings and all video references are blocked before generation.
+
+Apply `withLocalProxy` only after constructing external URLs; root queries must use `URL` / `URLSearchParams`, not `buildApiUrl`. Carry the original session/caller signal through awaits, per-block callbacks, polling, result downloads and `storeGeneratedVideo`. Application `/api` remains authenticated and never goes through the AI proxy. Image ten-minute timeout and video 120 polls / 2500ms are unchanged; queue-full creation adds no retry or paid-model fallback.
+
+### 4. Validation & Error Matrix
+
+| Condition | Outcome |
+| --- | --- |
+| `video_queue_full` | `agnesVideoQueueFull`, reject creation once, no task |
+| Missing `video_id`, even with `id` / `task_id` | `agnesNoVideoId`, no invented recoverable task |
+| Video references, unsupported seconds/resolution/audio/watermark | Corresponding `agnesVideo*Unsupported`, no generation request |
+| Completed video without URL / failed status | Failed task state, never successful video |
+| Saved provider protocol differs from current channel | `videoTaskProviderMismatch`, no query; preserve ID for configuration repair |
+| Saved model/channel removed | `videoModelUnavailable`, no fallback query |
+| Explicit image quality/background or `9:21` | Corresponding `agnesImage*Unsupported`, no silent parameter omission |
+| Abort / expired session / persistence failure | Propagate failure, no old-session callback or saved-success result |
+
+### 5. Good / Base / Bad Cases
+
+- Good: add Agnes explicitly, fill the key, select a Flash model, and generate one result per image slot or a six-second text video; existing defaults stay selected until the user changes them.
+- Base: old OpenAI channels on the Agnes hostname retain OpenAI behavior until explicitly converted; deleted preset models remain deleted after refresh/import.
+- Bad: use `response.id` for root video queries, accept a URL before completion, drop private references, downgrade a 1080P request, or overwrite a user's script/defaults.
+
+### 6. Tests Required
+
+`web/tests/agnes-api.test.ts` contains mocked assertions for preset normalization/deletion, explicit protocol isolation, exact request fields, queue-full/no retry, task ID and root-query identity, protocol/model mismatch, image count/size rules, script priority, Chat fragmented UTF-8/SSE/JSON and reasoning, and old-session rejection. The user-authorized isolated Docker run passes 17 tests / 93 assertions; do not automatically rerun checks. Independent Chrome also verifies provider UI/import/export/deletion, simulated text/image/video flows, private originals/refresh/download/Range, container restart, and pending-video logout cancellation. Simulated replies and the CC0 test clip are not real Agnes output: actual authenticated-provider/media CORS, Chat `max` behavior, the real video lifecycle, production/proxy/other-provider regression, and remaining failure/cancellation cases still need acceptance. Mobile compact-row name truncation also needs usability confirmation. The earlier free-video queue returned 503 without a task; it was not called again in this Docker run. See the active task's `research/docker-validation.md` for precise evidence.
+
+### 7. Wrong vs Correct
+
+Wrong: persist Agnes `id` as an OpenAI task and query `/v1/videos/{id}`; silently infer Agnes from a model name.
+
+Correct: after explicit channel selection, persist `{ id: agnesVideoTaskId(created), provider: "agnes", model: selectedModel }`, query `withLocalProxy(agnesVideoQueryUrl(baseUrl, task.id, task.model))`, and block recovery if that channel's protocol no longer matches.
