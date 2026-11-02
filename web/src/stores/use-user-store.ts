@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import i18n from "@/i18n";
-import { allowServerWrites, clearServerImages, flushServerTasks, loginServer, logoutServer, readServerSession, refreshServerMedia, resetServerSession, serverSessionSignal, type AdminUser } from "@/services/api/server";
+import { allowServerWrites, clearServerImages, flushServerTasks, loginServer, logoutServer, readServerSession, readSharedApiConfig, refreshServerMedia, resetServerSession, serverSessionSignal, type AppUser } from "@/services/api/server";
 import { flushServerWrites } from "@/lib/server-storage";
 import { queryClient } from "@/lib/query-client";
 import { resetPlugins } from "@/lib/canvas/plugin-loader";
@@ -19,7 +19,7 @@ import { discardCanvasSave, flushCanvasSave, useCanvasStore } from "@/stores/can
 import { useStorageStore } from "@/stores/use-storage-store";
 
 type UserStore = {
-    user: AdminUser | null;
+    user: AppUser | null;
     status: "checking" | "anonymous" | "authenticated" | "error";
     ready: boolean;
     loading: boolean;
@@ -63,15 +63,17 @@ export async function flushAppStorage() {
 function loadData() {
     if (loading) return loading;
     const current = ++generation;
-    resetServerSession(true);
+    const user = useUserStore.getState().user;
+    resetServerSession(user?.id);
     void queryClient.cancelQueries();
     queryClient.clear();
     resetBusinessState();
     useUserStore.setState({ ready: false, loading: true, error: "" });
     const job = (async () => {
         try {
-            await refreshServerMedia();
+            const [, sharedApiConfig] = await Promise.all([refreshServerMedia(), user?.role === "member" ? readSharedApiConfig() : null]);
             if (current !== generation) throw new DOMException("Session ended", "AbortError");
+            useConfigStore.setState({ sharedApiConfig });
             await Promise.all(persistedStores.map((store) => store.persist.rehydrate()));
             if (current !== generation) throw new DOMException("Session ended", "AbortError");
             if (persistedStores.some((store) => !store.getState().hydrated)) throw new Error(useStorageStore.getState().error || i18n.t("server.loadFailed"));

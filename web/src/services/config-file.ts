@@ -26,6 +26,7 @@ export function exportAppConfig() {
 }
 
 export async function importAppConfig(file: File) {
+    if (useConfigStore.getState().sharedApiConfig) throw new Error(i18n.t("config.sharedApi.readOnly"));
     const signal = serverSessionSignal();
     let data: AppConfigFile;
     try {

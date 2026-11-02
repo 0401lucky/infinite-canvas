@@ -26,7 +26,7 @@ export default function LoginPage() {
                     <p className="mt-5 max-w-sm text-sm leading-7" style={{ color: token.colorTextSecondary }}>{t("server.loginDescription")}</p>
                 </section>
                 <section className="rounded-2xl p-7 sm:p-9" style={{ background: token.colorBgContainer, border: `1px solid ${token.colorBorderSecondary}` }}>
-                    <div className="mb-7 flex items-center justify-between"><h2 className="text-lg font-semibold">{t("server.adminLogin")}</h2><LockKeyhole className="size-5" style={{ color: token.colorTextTertiary }} /></div>
+                    <div className="mb-7 flex items-center justify-between"><h2 className="text-lg font-semibold">{t("server.accountLogin")}</h2><LockKeyhole className="size-5" style={{ color: token.colorTextTertiary }} /></div>
                     {error ? <Alert className="mb-5" showIcon type="error" title={error} /> : null}
                     {status === "checking" ? <div className="flex h-48 items-center justify-center"><Spin /></div> : (
                         <Form layout="vertical" requiredMark={false} initialValues={{ username: "admin" }} onFinish={(values: { username: string; password: string }) => useUserStore.getState().login(values.username, values.password).catch(() => undefined)}>

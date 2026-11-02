@@ -5,7 +5,7 @@ import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
 import { serverStateStorage } from "@/lib/server-storage";
-import { serverSessionEpoch } from "@/services/api/server";
+import { readSharedApiConfig, serverSessionEpoch, serverSessionSignal } from "@/services/api/server";
 
 export type ApiCallFormat = "openai" | "gemini";
 export type ModelCapability = "image" | "video" | "text" | "audio";
@@ -60,6 +60,13 @@ export type AiConfig = {
     autoFocusOnSelect: boolean;
 };
 
+export type SharedApiConfig = Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat" | "channels" | "models" | "model" | "imageModel" | "videoModel" | "textModel" | "audioModel">;
+const sharedApiKeys = new Set<keyof AiConfig>(["baseUrl", "apiKey", "apiFormat", "channels", "models"]);
+let sharedApiRefresh = 0;
+function apiFields(config: SharedApiConfig) {
+    return { baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, channels: config.channels, models: modelOptionsFromChannels(config.channels) };
+}
+
 export type WebdavSyncConfig = {
     url: string;
     username: string;
@@ -67,10 +74,10 @@ export type WebdavSyncConfig = {
     directory: string;
     lastSyncedAt: string;
 };
-export type ConfigTabKey = "channels" | "local-proxy" | "preferences" | "prompt-sources" | "webdav" | "server-storage";
+export type ConfigTabKey = "channels" | "local-proxy" | "preferences" | "prompt-sources" | "webdav" | "server-storage" | "accounts";
 
 export type ChannelCredentialsImportResult = {
-    status: "created" | "updated" | "missing-base-url" | "invalid-base-url";
+    status: "created" | "updated" | "missing-base-url" | "invalid-base-url" | "read-only";
     channelName?: string;
 };
 
@@ -140,6 +147,8 @@ export const defaultWebdavSyncConfig: WebdavSyncConfig = {
 type ConfigStore = {
     hydrated: boolean;
     config: AiConfig;
+    sharedApiConfig: SharedApiConfig | null;
+    refreshSharedApiConfig: () => Promise<void>;
     webdav: WebdavSyncConfig;
     isConfigOpen: boolean;
     configTab: ConfigTabKey;
@@ -220,18 +229,31 @@ export const useConfigStore = create<ConfigStore>()(
         (set, get) => ({
             hydrated: false,
             config: defaultConfig,
+            sharedApiConfig: null,
+            refreshSharedApiConfig: async () => {
+                if (!get().sharedApiConfig) return;
+                const refresh = ++sharedApiRefresh;
+                const signal = serverSessionSignal();
+                const sharedApiConfig = await readSharedApiConfig();
+                signal.throwIfAborted();
+                if (refresh !== sharedApiRefresh) return;
+                if (JSON.stringify(sharedApiConfig) !== JSON.stringify(get().sharedApiConfig)) set((state) => ({ sharedApiConfig, config: { ...state.config, ...apiFields(sharedApiConfig) } }));
+            },
             webdav: defaultWebdavSyncConfig,
             isConfigOpen: false,
             configTab: "channels",
             shouldPromptContinue: false,
-            updateConfig: (key, value) =>
+            updateConfig: (key, value) => {
+                if (get().sharedApiConfig && sharedApiKeys.has(key)) return;
                 set((state) => ({
                     config: {
                         ...state.config,
                         [key]: value,
                     },
-                })),
+                }));
+            },
             importChannelCredentials: (input) => {
+                if (get().sharedApiConfig) return { status: "read-only" };
                 const currentConfig = get().config;
                 const result = upsertChannelCredentials(currentConfig, input);
                 if (result.config !== currentConfig) set({ config: result.config });
@@ -257,15 +279,16 @@ export const useConfigStore = create<ConfigStore>()(
                 const epoch = serverSessionEpoch();
                 return (_state, error) => { if (epoch === serverSessionEpoch()) useConfigStore.setState({ hydrated: !error }); };
             },
-            partialize: (state) => ({ config: state.config, webdav: state.webdav }),
+            partialize: (state) => ({ config: state.sharedApiConfig ? Object.fromEntries(Object.entries(state.config).filter(([key]) => !sharedApiKeys.has(key as keyof AiConfig))) : state.config, webdav: state.webdav }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
                 const persistedWebdav = (persistedState.webdav || {}) as Partial<WebdavSyncConfig>;
-                const config = { ...defaultConfig, ...persistedConfig };
-                if (!Array.isArray(persistedConfig.channels)) config.channels = [];
-                const channels = normalizeChannels(config);
+                const config = { ...defaultConfig, ...current.sharedApiConfig, ...persistedConfig, ...(current.sharedApiConfig ? apiFields(current.sharedApiConfig) : {}) };
+                if (!current.sharedApiConfig && !Array.isArray(persistedConfig.channels)) config.channels = [];
+                const channels = current.sharedApiConfig ? current.sharedApiConfig.channels : normalizeChannels(config);
                 const models = modelOptionsFromChannels(channels);
+                const selectedModel = (value: string) => normalizeModelOptionValue(value, channels) || (current.sharedApiConfig ? value : "");
                 return {
                     ...current,
                     webdav: { ...defaultWebdavSyncConfig, ...persistedWebdav },
@@ -275,10 +298,10 @@ export const useConfigStore = create<ConfigStore>()(
                         apiFormat: normalizeApiFormat(config.apiFormat),
                         channels,
                         models,
-                        imageModel: normalizeModelOptionValue(config.imageModel || config.model, channels),
-                        videoModel: normalizeModelOptionValue(config.videoModel, channels),
-                        textModel: normalizeModelOptionValue(config.textModel || config.model, channels),
-                        audioModel: normalizeModelOptionValue(config.audioModel || defaultConfig.audioModel, channels),
+                        imageModel: selectedModel(config.imageModel || config.model),
+                        videoModel: selectedModel(config.videoModel),
+                        textModel: selectedModel(config.textModel || config.model),
+                        audioModel: selectedModel(config.audioModel || defaultConfig.audioModel),
                         audioVoice: config.audioVoice || defaultConfig.audioVoice,
                         audioFormat: config.audioFormat || defaultConfig.audioFormat,
                         audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,

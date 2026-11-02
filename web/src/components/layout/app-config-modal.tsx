@@ -10,7 +10,8 @@ import { ChannelEditorDrawer } from "@/components/layout/channel-editor-drawer";
 import { ConfigLocalProxy } from "@/components/layout/config-local-proxy";
 import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
 import { ConfigServerStorage } from "@/components/layout/config-server-storage";
-import { flushAppStorage } from "@/stores/use-user-store";
+import { ConfigAccounts } from "@/components/layout/config-accounts";
+import { flushAppStorage, useUserStore } from "@/stores/use-user-store";
 import { serverSessionSignal } from "@/services/api/server";
 import type { AppLocale } from "@/i18n";
 import { exportAppConfig, importAppConfig } from "@/services/config-file";
@@ -58,6 +59,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const [activeTab, setActiveTab] = useState<ConfigTabKey>(initialTab);
     const [editingChannelId, setEditingChannelId] = useState("");
     const [testingWebdav, setTestingWebdav] = useState(false);
+    const [refreshingApi, setRefreshingApi] = useState(false);
     const [syncingWebdav, setSyncingWebdav] = useState(false);
     const [webdavSyncStatus, setWebdavSyncStatus] = useState("");
     const [webdavDomainProgress, setWebdavDomainProgress] = useState(createWebdavDomainProgress);
@@ -68,11 +70,23 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     const clearPromptContinue = useConfigStore((state) => state.clearPromptContinue);
+    const isAdmin = useUserStore((state) => state.user?.role === "admin");
     const webdavReady = Boolean(webdav.url.trim());
     const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const locale = i18n.resolvedLanguage as AppLocale;
     const imageResolutionOptions = mediaScaleOptions.map((value) => ({ value, label: value === "auto" ? t("settingsPanels.common.auto") : value.toUpperCase() }));
-    useEffect(() => setActiveTab(initialTab), [initialTab]);
+    useEffect(() => setActiveTab(initialTab === "accounts" && !isAdmin ? "channels" : initialTab), [initialTab, isAdmin]);
+
+    const refreshApi = async () => {
+        const signal = serverSessionSignal();
+        setRefreshingApi(true);
+        try {
+            await useConfigStore.getState().refreshSharedApiConfig();
+            signal.throwIfAborted();
+            message.success(t("config.sharedApi.refreshed"));
+        } catch (error) { if (!signal.aborted) message.error(error instanceof Error ? error.message : t("server.unavailable")); }
+        finally { if (!signal.aborted) setRefreshingApi(false); }
+    };
 
     const saveConfig = (nextConfig: AiConfig) => {
         (Object.keys(nextConfig) as Array<keyof AiConfig>).forEach((key) => updateConfig(key, nextConfig[key]));
@@ -182,9 +196,9 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 pb-3 dark:border-stone-800">
                 <div className="text-xs text-stone-500">{t("config.fileSecurity")}</div>
                 <div className="flex gap-2">
-                    <Button icon={<Upload className="size-4" />} onClick={() => configInputRef.current?.click()}>
+                    {isAdmin ? <Button icon={<Upload className="size-4" />} onClick={() => configInputRef.current?.click()}>
                         {t("config.import")}
-                    </Button>
+                    </Button> : null}
                     <Button icon={<Download className="size-4" />} onClick={exportAppConfig}>
                         {t("config.export")}
                     </Button>
@@ -201,10 +215,10 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                         children: (
                             <div>
                                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                                    <div className="text-xs text-stone-500">{t("config.channels.description")}</div>
-                                    <Button type="primary" icon={<Plus className="size-4" />} onClick={addChannel}>
+                                    <div className="text-xs text-stone-500">{t(isAdmin ? "config.sharedApi.adminDescription" : "config.sharedApi.description")}</div>
+                                    {isAdmin ? <Button type="primary" icon={<Plus className="size-4" />} onClick={addChannel}>
                                         {t("config.channels.add")}
-                                    </Button>
+                                    </Button> : <Button type="text" icon={<RefreshCw className="size-4" />} loading={refreshingApi} onClick={() => void refreshApi()}>{t("config.sharedApi.refresh")}</Button>}
                                 </div>
                                 <div className="space-y-2">
                                     {config.channels.map((channel) => (
@@ -215,12 +229,12 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                                     {apiFormatLabel(channel.apiFormat)} · {t("config.channels.modelCount", { count: channel.models.length })} · {channel.baseUrl || t("config.channels.missingUrl")}
                                                 </div>
                                             </div>
-                                            <div className="flex shrink-0 gap-2">
+                                            {isAdmin ? <div className="flex shrink-0 gap-2">
                                                 <Button size="small" icon={<Pencil className="size-3.5" />} onClick={() => setEditingChannelId(channel.id)}>
                                                     {t("common.edit")}
                                                 </Button>
                                                 <Button size="small" danger icon={<Trash2 className="size-3.5" />} onClick={() => deleteChannel(channel.id)} />
-                                            </div>
+                                            </div> : null}
                                         </div>
                                     ))}
                                 </div>
@@ -362,6 +376,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                         label: t("config.tabs.serverStorage"),
                         children: <ConfigServerStorage active={activeTab === "server-storage"} />,
                     },
+                    ...(isAdmin ? [{ key: "accounts", label: t("config.accounts.title"), children: <ConfigAccounts active={activeTab === "accounts"} /> }] : []),
                 ]}
             />
             {showDoneButton ? (
@@ -371,7 +386,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                     </Button>
                 </div>
             ) : null}
-            <ChannelEditorDrawer open={Boolean(editingChannel)} channel={editingChannel} onSave={saveChannel} onClose={() => setEditingChannelId("")} />
+            {isAdmin ? <ChannelEditorDrawer open={Boolean(editingChannel)} channel={editingChannel} onSave={saveChannel} onClose={() => setEditingChannelId("")} /> : null}
         </>
     );
 }

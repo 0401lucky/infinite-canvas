@@ -1,4 +1,3 @@
-import { mkdirSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -24,10 +23,5 @@ export const config = {
     jsonBytes: env.MAX_JSON_MIB * 1024 * 1024,
 };
 
-export const imageDir = resolve(config.dataDir, "media/images");
 const publicPath = relative(resolve(serverDir, "../web"), config.dataDir);
 if (!publicPath || !isAbsolute(publicPath) && publicPath !== ".." && !publicPath.startsWith(`..${sep}`)) throw new Error("DATA_DIR 不能放在前端目录中");
-export const mediaDir = resolve(config.dataDir, "media/files");
-export const previewDir = resolve(config.dataDir, "previews");
-export const uploadDir = resolve(config.dataDir, "uploads");
-for (const dir of [config.dataDir, imageDir, mediaDir, previewDir, uploadDir]) mkdirSync(dir, { recursive: true });

@@ -1,7 +1,9 @@
 import i18n from "@/i18n";
 import { useStorageStore } from "@/stores/use-storage-store";
+import type { SharedApiConfig } from "@/stores/use-config-store";
 
-export type AdminUser = { id: string; username: string };
+export type AppUser = { id: string; username: string; role: "admin" | "member" };
+export type MemberAccount = { id: string; username: string; disabled: boolean };
 export type ServerRecord<T = unknown> = { key: string; value: T | null; revision: number; deleted?: boolean };
 export type ServerRecords = { revision: number; records: ServerRecord[] };
 export type ServerMedia = { key: string; kind: "image" | "media"; mimeType: string; bytes: number; previewBytes: number; previewVersion: number; hasPreview: boolean; revision: number; cleared: boolean };
@@ -15,6 +17,7 @@ let controller = new AbortController();
 let epoch = 0;
 let active = false;
 let writable = false;
+let sessionUserId = "";
 const media = new Map<string, ServerMedia>();
 const tasks = new Set<Promise<unknown>>();
 export const serverSessionEpoch = () => epoch;
@@ -22,11 +25,12 @@ export const serverSessionSignal = (signal?: AbortSignal) => active ? signal ? A
 export const canWriteServerStorage = () => active && writable;
 export function allowServerWrites(value: boolean) { writable = value; }
 
-export function resetServerSession(enabled = false) {
+export function resetServerSession(userId = "") {
     controller.abort();
     controller = new AbortController();
     epoch += 1;
-    active = enabled;
+    active = Boolean(userId);
+    sessionUserId = userId;
     writable = false;
     media.clear();
     tasks.clear();
@@ -37,8 +41,10 @@ async function responseFor(path: string, init: RequestInit, protectedRequest: bo
     if (protectedRequest && !active) throw new DOMException("Session ended", "AbortError");
     const currentEpoch = epoch;
     const signal = init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal;
+    const headers = new Headers(init.headers);
+    if (protectedRequest) headers.set("X-Canvas-User", sessionUserId);
     let response: Response;
-    try { response = await fetch(`/api${path}`, { ...init, credentials: "same-origin", cache: "no-store", signal }); }
+    try { response = await fetch(`/api${path}`, { ...init, headers, credentials: "same-origin", cache: "no-store", signal }); }
     catch (error) { if (signal.aborted) throw new DOMException("Request aborted", "AbortError"); throw new ServerApiError(0, "SERVER_UNAVAILABLE", i18n.t("server.unavailable")); }
     if (signal.aborted || (protectedRequest && currentEpoch !== epoch)) throw new DOMException("Session ended", "AbortError");
     if (!response.ok) {
@@ -88,9 +94,13 @@ export async function flushServerTasks() {
 
 const jsonBody = (value: unknown) => ({ headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) });
 const recordPath = (namespace: string, key?: string) => `/records/${encodeURIComponent(namespace)}${key === undefined ? "" : `/${encodeURIComponent(key)}`}`;
-export const readServerSession = () => request<{ user: AdminUser | null }>("/auth/session", {}, false);
-export const loginServer = (username: string, password: string) => request<{ user: AdminUser }>("/auth/login", { method: "POST", ...jsonBody({ username, password }) }, false);
-export const logoutServer = () => request<void>("/auth/session", { method: "DELETE" }, false);
+export const readServerSession = () => request<{ user: AppUser | null }>("/auth/session", {}, false);
+export const loginServer = (username: string, password: string) => request<{ user: AppUser }>("/auth/login", { method: "POST", ...jsonBody({ username, password }) }, false);
+export const logoutServer = () => request<void>("/auth/session", { method: "DELETE" });
+export const readMemberAccounts = () => request<MemberAccount[]>("/accounts");
+export const createMemberAccount = (username: string, password: string) => request<MemberAccount>("/accounts", { method: "POST", ...jsonBody({ username, password }) });
+export const updateMemberAccount = (id: string, changes: { password?: string; disabled?: boolean }) => request<MemberAccount>(`/accounts/${encodeURIComponent(id)}`, { method: "PUT", ...jsonBody(changes) });
+export const readSharedApiConfig = () => request<SharedApiConfig>("/shared-api-config");
 export const readServerRecord = (namespace: string, key: string) => request<ServerRecord>(recordPath(namespace, key));
 export const readServerRecords = (namespace: string) => request<ServerRecords>(recordPath(namespace));
 export function writeServerRecord(namespace: string, key: string, value: unknown, revision: number, deleted = false) {
