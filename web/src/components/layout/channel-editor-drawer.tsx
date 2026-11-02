@@ -1,4 +1,4 @@
-import { Button, Drawer, Input, Segmented, Select, Space } from "antd";
+import { Button, Drawer, Input, Modal, Segmented, Select, Space } from "antd";
 import { ListPlus, Plus, Trash2 } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useEffect, useState } from "react";
@@ -14,6 +14,8 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     const { t } = useTranslation();
     const [draft, setDraft] = useState<ModelChannel | null>(channel);
     const [selectOpen, setSelectOpen] = useState(false);
+    const [bulkOpen, setBulkOpen] = useState(false);
+    const [bulkKeys, setBulkKeys] = useState("");
     const [scriptTarget, setScriptTarget] = useState<ScriptTarget | null>(null);
     const apiFormatOptions: Array<{ label: string; value: ApiCallFormat }> = [
         { label: "OpenAI", value: "openai" },
@@ -23,14 +25,24 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     const capabilityOptions: Array<{ label: string; value: ModelCapability }> = ["image", "video", "text", "audio"].map((value) => ({ label: t(`config.channelEditor.capabilities.${value}`), value: value as ModelCapability }));
 
     useEffect(() => {
+        setBulkOpen(false);
+        setBulkKeys("");
         if (open && channel) setDraft(channel.apiFormat === "agnes" ? { ...channel, baseUrl: AGNES_BASE_URL } : channel);
     }, [open, channel]);
 
     if (!draft) return null;
 
     const multipleKeys = draft.apiFormat === "agnes" && (draft.apiKeyMode === "round-robin" || draft.apiKeyMode === "random");
+    const existingKeys = new Set((draft.apiKeys || []).map((item) => item.value.trim()));
+    const appendedKeys = [...new Set(bulkKeys.split(/\r?\n/).map((value) => value.trim()).filter(Boolean))].filter((value) => !existingKeys.has(value));
     const patch = (value: Partial<ModelChannel>) => setDraft((current) => (current ? { ...current, ...value } : current));
     const setModels = (models: ChannelModel[]) => patch({ models });
+    const closeBulk = () => { setBulkOpen(false); setBulkKeys(""); };
+    const appendKeys = () => {
+        if (!appendedKeys.length) return;
+        patch({ apiKeys: [...(draft.apiKeys || []), ...appendedKeys.map((value) => ({ id: nanoid(), value }))] });
+        closeBulk();
+    };
 
     const changeApiFormat = (apiFormat: ApiCallFormat) => {
         if (apiFormat === draft.apiFormat) return;
@@ -87,9 +99,12 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     <Segmented block value={draft.apiKeyMode || "single"} options={(["single", "round-robin", "random"] as const).map((value) => ({ value, label: t(`config.channelEditor.keyModes.${value}`) }))} onChange={(value) => patch({ apiKeyMode: value as ApiKeyMode, apiKeys: draft.apiKeys?.length ? draft.apiKeys : [{ id: nanoid(), value: draft.apiKey }] })} />
                 </div> : null}
                 {multipleKeys ? <div className="space-y-2 md:col-span-2">
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-sm font-medium">API Keys</span>
-                        <Button type="text" size="small" icon={<Plus className="size-3.5" />} onClick={() => patch({ apiKeys: [...(draft.apiKeys || []), { id: nanoid(), value: "" }] })}>{t("config.channelEditor.addKey")}</Button>
+                        <div className="flex items-center gap-1">
+                            <Button type="text" size="small" icon={<Plus className="size-3.5" />} onClick={() => patch({ apiKeys: [...(draft.apiKeys || []), { id: nanoid(), value: "" }] })}>{t("config.channelEditor.addKey")}</Button>
+                            <Button type="text" size="small" icon={<ListPlus className="size-3.5" />} onClick={() => setBulkOpen(true)}>{t("config.channelEditor.bulkAddKeys")}</Button>
+                        </div>
                     </div>
                     {(draft.apiKeys || []).map((item, index) => <div key={item.id} className="flex items-center gap-2">
                         <Input.Password aria-label={`API Key ${index + 1}`} value={item.value} placeholder={`API Key ${index + 1}`} onChange={(event) => patch({ apiKeys: draft.apiKeys?.map((key) => key.id === item.id ? { ...key, value: event.target.value } : key) })} />
@@ -138,6 +153,11 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                     <div className="px-2 py-8 text-center text-sm text-stone-500">{t("config.channelEditor.empty")}</div>
                 )}
             </div>
+
+            <Modal title={t("config.channelEditor.bulkAddKeys")} open={bulkOpen} onCancel={closeBulk} onOk={appendKeys} okText={t("config.channelEditor.appendKeyCount", { count: appendedKeys.length })} cancelText={t("common.cancel")} okButtonProps={{ disabled: !appendedKeys.length }} destroyOnHidden>
+                <Input.TextArea autoFocus rows={6} value={bulkKeys} onChange={(event) => setBulkKeys(event.target.value)} placeholder={t("config.channelEditor.bulkKeysPlaceholder")} aria-label={t("config.channelEditor.bulkAddKeys")} autoComplete="off" spellCheck={false} />
+                <p className="mt-2 text-xs leading-5 opacity-60">{t("config.channelEditor.bulkKeysHint")}</p>
+            </Modal>
 
             <ModelSelectModal open={selectOpen} channel={draft} selectedNames={draft.models.map((model) => model.name)} onConfirm={applySelection} onClose={() => setSelectOpen(false)} />
 
