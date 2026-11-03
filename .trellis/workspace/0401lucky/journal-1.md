@@ -201,3 +201,36 @@ User explicitly authorized adapting and pushing the application image workflow. 
 ### Next Steps
 
 - 通过仅 loopback 的临时输入页取得内存凭据后优先验证当前官方免费 Flash 视频，再验证真实文本/识图/图片；队列满不自动重试或切换付费模型。
+
+
+## Session 7: 画布图片隐私模糊
+<!-- trellis-session: v=2 fp=41eefda6cf652483 -->
+
+**Date**: 2026-11-03
+**Task**: 画布图片隐私模糊
+**Branch**: `main`
+
+### Summary
+
+完成按图片节点或图片组独立切换的显示模糊，状态随服务端画布记录保存；相关列表、大图、提示词和 Agent 引用同步处理，原图与独立素材记录不变。已复核差异并更新待测试、Unreleased 和画布规范。
+
+### Main Changes
+
+- 增加独立眼睛按钮、整组模糊、同图副本保留和原图编辑保护。
+- 补齐相关预览与已插入图片 token 的显示状态同步，不改变下载、导出、AI 请求或 Agent 消息存储格式。
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] 按项目规则未运行语法、类型、lint、测试、格式化、构建或浏览器验收；仅做规范、数据流与差异复核。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 用户手工确认单图和图片组切换、刷新保留、所有预览与原文件边界。

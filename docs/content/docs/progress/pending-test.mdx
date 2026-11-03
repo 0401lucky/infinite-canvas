@@ -16,6 +16,17 @@ Implemented and deployed after user authorization. GitHub Actions built and publ
 - Video affinity: after JSON/history/canvas restoration, repeated queries use the submission key even if the pool is reordered or the selection mode changes. Only the key ID enters task metadata, never the credential. Editing/removing that key must block the query instead of choosing another key; restoring the original configuration may restore access. Configuration imports must not reuse an existing ID for changed key contents; a URL credential update replaces the pool's first key with a new identity while retaining the remaining keys.
 - Added 11 regression cases in `web/tests/agnes-api.test.ts` covering selection, request headers, session reset, stable task identity, shared configuration, and unavailable keys. These new cases have not been executed. Existing timeout, polling, retry, and concurrency behavior remains unchanged.
 
+## Canvas Image Privacy
+
+Code/spec diffs have been reviewed; no syntax, type, lint, test, build, or browser checks were run. Manual acceptance remains required:
+
+- The eye button in the image toolbar should switch between Blur image and Unblur image, affecting only that node or its entire image batch. It remains available regardless of quick-tool visibility preferences, and other images remain clear. Check desktop/mobile and both themes; hover, double-click, and full-size viewing must not cancel blur.
+- Expanding a batch, switching its primary image, regenerating in place, retrying, or replacing its image should preserve the flag and existing geometry/proportion rules. Creating a same-image batch copy and copying/pasting nodes should retain the flag; the copy can then be unblurred independently.
+- After successful server persistence, refresh/reopening should restore the flag; unblurring should persist too. Storage failures keep the existing error handling, without claiming the in-memory toggle was saved or adding browser business storage.
+- Both element-list views, list hover previews, full-size dialogs, reference strips, prompt `@` candidates/chips and their image previews, and Agent canvas-reference candidates/input tokens/message tokens/hover previews should respect the flag. Already-open previews should update, and updating a focused editor's existing image token must not reset text, the caret, or IME input.
+- Crop, local edit, split, upscale, and angle editors must ask for explicit unblurring instead of revealing an original automatically. An already-open editor must stop displaying a clear image if blur is enabled. Editing works normally after unblurring. Downloads, ZIP exports, and AI references retain original files; display blur is not original-file redaction.
+- Independent asset/workbench records and separately uploaded Agent attachments are unchanged; independently generated new nodes are not automatically blurred. The flag is not linked globally by `storageKey`, and there is no automatic NSFW detection, global privacy mode, or strength setting.
+
 ## Agnes Built-In Provider
 
 The user reported that Agnes testing passed and approved integration and publication to `main`; the base feature is now described in [Features](/docs/overview/features). The earlier authorized Docker run built an isolated `linux/amd64` image and passed **17 tests / 93 assertions**. Those results predate integration with member accounts; no syntax/type/lint checks, tests, formatting, or builds were run again for this merge.

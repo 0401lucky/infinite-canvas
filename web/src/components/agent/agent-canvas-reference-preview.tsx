@@ -3,10 +3,12 @@ import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
-import type { AgentCanvasReference } from "@/stores/use-agent-store";
+import { canvasImagePrivacyStyle } from "@/lib/canvas/canvas-image-privacy";
+import { useAgentStore, type AgentCanvasReference } from "@/stores/use-agent-store";
 
 export function AgentCanvasReferencePreview({ reference, previewUrl, previewText, theme }: { reference: AgentCanvasReference; previewUrl?: string; previewText?: string; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
     const { t } = useTranslation();
+    const privacyBlurred = useAgentStore((state) => Boolean(state.canvasContext?.snapshot.nodes.find((node) => node.id === reference.nodeId)?.metadata?.privacyBlurred));
     const Icon = canvasReferenceIcon(reference.kind);
     return (
         <div className="w-64" style={{ color: theme.node.text }}>
@@ -14,7 +16,7 @@ export function AgentCanvasReferencePreview({ reference, previewUrl, previewText
                 <Icon className="size-4 shrink-0" style={{ color: theme.node.muted }} />
                 <span className="truncate text-sm font-medium">{reference.title}</span>
             </div>
-            {reference.kind === "image" && previewUrl ? <img src={previewUrl} alt={reference.title} className="max-h-64 w-full rounded-md object-contain" /> : null}
+            {reference.kind === "image" && previewUrl ? <div className="overflow-hidden rounded-md"><img src={previewUrl} alt={reference.title} className="max-h-64 w-full object-contain" style={privacyBlurred ? canvasImagePrivacyStyle : undefined} /></div> : null}
             {reference.kind === "video" && previewUrl ? <video src={previewUrl} controls preload="metadata" className="max-h-64 w-full rounded-md" /> : null}
             {reference.kind === "audio" && previewUrl ? <audio src={previewUrl} controls preload="metadata" className="w-full" /> : null}
             {reference.kind === "text" && previewText ? (

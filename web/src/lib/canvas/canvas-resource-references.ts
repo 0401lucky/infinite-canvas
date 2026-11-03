@@ -14,6 +14,7 @@ export type CanvasResourceReference = {
     label: string;
     title: string;
     previewUrl?: string;
+    privacyBlurred?: boolean;
     text?: string;
     active: boolean;
 };
@@ -113,6 +114,7 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {
                 label,
                 title: node.title || label,
                 previewUrl: node.metadata?.content || resource?.url,
+                privacyBlurred: kind === "image" && node.metadata?.privacyBlurred,
                 text: resourceText(node),
                 active,
             },

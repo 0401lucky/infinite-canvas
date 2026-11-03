@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
 import { Popover } from "antd";
 import { Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasImagePrivacyStyle } from "@/lib/canvas/canvas-image-privacy";
 import { buildCanvasResourceReferences, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { isImeComposing, isPlainEnterKey } from "@/lib/keyboard-event";
 import type { AgentSkillSummary } from "@/services/api/canvas-agent";
@@ -33,6 +35,7 @@ export function AgentChatPromptInput({ value, disabled, placeholder, theme, onCh
     const skillsLoading = useAgentSkillStore((state) => state.loading);
     const selectedSkill = useAgentSkillStore((state) => state.selectedSkill);
     const canvasReferences = useAgentStore((state) => state.canvasReferences);
+    const privacyBlurredNodeIds = useAgentStore(useShallow((state) => (state.canvasContext?.snapshot.nodes || []).filter((node) => node.metadata?.privacyBlurred).map((node) => node.id)));
     const [command, setCommand] = useState<ComposerCommand | null>(null);
     const [activeIndex, setActiveIndex] = useState(0);
     const [resourceCandidates, setResourceCandidates] = useState<CanvasResourceReference[]>([]);
@@ -69,6 +72,14 @@ export function AgentChatPromptInput({ value, disabled, placeholder, theme, onCh
         }));
         lastEmittedRef.current = value;
     }, [theme, tokens, value]);
+
+    useLayoutEffect(() => {
+        const blurred = new Set(privacyBlurredNodeIds);
+        editorRef.current?.querySelectorAll<HTMLImageElement>("[data-agent-token-kind='resource'] img").forEach((image) => {
+            const nodeId = image.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId || "";
+            image.style.filter = blurred.has(nodeId) ? canvasImagePrivacyStyle.filter || "" : "";
+        });
+    }, [canvasReferences, privacyBlurredNodeIds]);
 
     const emit = (next: string) => {
         lastEmittedRef.current = next;
@@ -270,7 +281,8 @@ function AgentCommandMenu({ command, candidates, activeIndex, loading, theme, on
 }
 
 function ReferencePreview({ reference }: { reference: CanvasResourceReference }) {
-    if (reference.kind === "image" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-9 rounded-md object-cover" />;
+    const privacyBlurred = useAgentStore((state) => Boolean(state.canvasContext?.snapshot.nodes.find((node) => node.id === reference.nodeId)?.metadata?.privacyBlurred));
+    if (reference.kind === "image" && reference.previewUrl) return <span className="size-9 shrink-0 overflow-hidden rounded-md"><img src={reference.previewUrl} alt="" className="size-full object-cover" style={privacyBlurred ? canvasImagePrivacyStyle : undefined} /></span>;
     const Icon = canvasReferenceIcon(reference.kind);
     return <span className="grid size-9 shrink-0 place-items-center"><Icon className="size-4" /></span>;
 }
@@ -291,8 +303,13 @@ function createReferenceToken(reference: AgentCanvasReference, theme: (typeof ca
         const image = document.createElement("img");
         image.src = reference.previewUrl;
         image.alt = "";
-        image.className = agentInlineTokenMediaClass;
-        token.append(image);
+        image.className = "size-full object-cover";
+        const privacyBlurred = useAgentStore.getState().canvasContext?.snapshot.nodes.find((node) => node.id === reference.nodeId)?.metadata?.privacyBlurred;
+        image.style.filter = privacyBlurred ? canvasImagePrivacyStyle.filter || "" : "";
+        const frame = document.createElement("span");
+        frame.className = `${agentInlineTokenMediaClass} overflow-hidden`;
+        frame.append(image);
+        token.append(frame);
     }
     token.append(document.createTextNode(agentReferenceMarker(reference)));
     return token;

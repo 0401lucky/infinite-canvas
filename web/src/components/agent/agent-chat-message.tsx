@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasImagePrivacyStyle } from "@/lib/canvas/canvas-image-privacy";
 import { useAgentStore, type AgentCanvasReference, type AgentPendingApproval, type AgentSkillReference } from "@/stores/use-agent-store";
 import { resolveAgentMessageAssetUrl, revealAgentLocalFile } from "@/services/api/canvas-agent";
 import { AgentCanvasReferencePreview, canvasReferenceIcon, canvasReferenceKindLabel } from "./agent-canvas-reference-preview";
@@ -176,7 +177,7 @@ function AgentCanvasMention({ reference, theme }: { reference: AgentCanvasRefere
                 aria-label={i18n.t("agent.composer.mentions.referenceLabel", { kind: canvasReferenceKindLabel(reference.kind), title: reference.title })}
             >
                 {reference.kind === "image" && previewUrl
-                    ? <img src={previewUrl} alt="" className={agentInlineTokenMediaClass} />
+                    ? <span className={`${agentInlineTokenMediaClass} overflow-hidden`}><img src={previewUrl} alt="" className="size-full object-cover" style={node?.metadata?.privacyBlurred ? canvasImagePrivacyStyle : undefined} /></span>
                     : <Icon className={agentInlineTokenIconClass} />}
                 <span>{agentReferenceMarker(reference)}</span>
             </span>

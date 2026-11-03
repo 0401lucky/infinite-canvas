@@ -24,6 +24,7 @@ type NodeGenerationResourceInput = {
     title: string;
     text?: string;
     image?: ReferenceImage;
+    privacyBlurred?: boolean;
     video?: ReferenceVideo;
     audio?: ReferenceAudio;
 };
@@ -142,7 +143,7 @@ function flattenGenerationInputs(inputs: NodeGenerationInput[]) {
 
 function readNodeGenerationResource(node: CanvasNodeData): NodeGenerationResourceInput[] {
     const image = readReferenceImage(node);
-    if (image) return [{ nodeId: node.id, type: "image", title: node.title, image }];
+    if (image) return [{ nodeId: node.id, type: "image", title: node.title, image, privacyBlurred: node.metadata?.privacyBlurred }];
     const video = readReferenceVideo(node);
     if (video) return [{ nodeId: node.id, type: "video", title: node.title, video }];
     const audio = readReferenceAudio(node);

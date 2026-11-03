@@ -18,6 +18,7 @@ import { nanoid } from "nanoid";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
+import { canvasImagePrivacyStyle } from "@/lib/canvas/canvas-image-privacy";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
@@ -1710,6 +1711,18 @@ function InfiniteCanvasPage() {
         );
     }, []);
 
+    const toggleNodePrivacyBlur = useCallback((nodeId: string) => {
+        setNodes((prev) => prev.map((node) => node.id === nodeId && node.type === CanvasNodeType.Image ? { ...node, metadata: { ...node.metadata, privacyBlurred: !node.metadata?.privacyBlurred } } : node));
+    }, []);
+
+    const openImageEditor = (node: CanvasNodeData, open: (nodeId: string) => void) => {
+        if (node.metadata?.privacyBlurred) {
+            message.info(t("canvas.imageTools.unblurBeforeEdit"));
+            return;
+        }
+        open(node.id);
+    };
+
     const handleNodeContentChange = useCallback((nodeId: string, content: string) => {
         setNodes((prev) =>
             prev.map((node) =>
@@ -1791,6 +1804,7 @@ function InfiniteCanvasPage() {
                 quality: node.metadata?.quality,
                 background: node.metadata?.background,
                 references: node.metadata?.references,
+                privacyBlurred: node.metadata?.privacyBlurred,
             },
         };
         setNodes((prev) => [...prev, copy]);
@@ -3163,14 +3177,15 @@ function InfiniteCanvasPage() {
               }
             : null;
     const showHoverPreview = Boolean(hoverPreviewMedia);
-    const retainedPreviewRef = useRef<{ video: boolean; src: string; title: string; width: number; height: number } | null>(null);
+    const retainedPreviewRef = useRef<{ nodeId: string; privacyBlurred?: boolean; video: boolean; src: string; title: string; width: number; height: number } | null>(null);
     // Written during render on purpose: the overlay stays mounted while it fades out, so the last preview has to be
     // retained after the hovered node clears. Sizing reuses the measured container size instead of reading layout here.
     if (hoverPreviewMedia) {
         const previewSize = fitNodeSize(hoverPreviewMedia.width, hoverPreviewMedia.height, size.width * 0.9, size.height * 0.9);
-        retainedPreviewRef.current = { video: hoverPreviewMedia.video, src: hoverPreviewMedia.src, title: hoverPreviewNode?.title || "", width: previewSize.width, height: previewSize.height };
+        retainedPreviewRef.current = { nodeId: hoverPreviewNode!.id, privacyBlurred: hoverPreviewNode?.metadata?.privacyBlurred, video: hoverPreviewMedia.video, src: hoverPreviewMedia.src, title: hoverPreviewNode?.title || "", width: previewSize.width, height: previewSize.height };
     }
     const retainedPreview = retainedPreviewRef.current;
+    const retainedPreviewBlurred = retainedPreview ? nodeById.get(retainedPreview.nodeId)?.metadata?.privacyBlurred ?? retainedPreview.privacyBlurred : false;
 
     if (!projectLoaded) return <CanvasRefreshShell />;
 
@@ -3333,7 +3348,7 @@ function InfiniteCanvasPage() {
                                     {retainedPreview.title || t(retainedPreview.video ? "assets.kinds.video" : "assets.kinds.image")}
                                 </div>
                                 <div className="overflow-hidden" style={{ width: retainedPreview.width, height: retainedPreview.height }}>
-                                    {retainedPreview.video ? <video src={retainedPreview.src} muted playsInline preload="metadata" className="size-full object-contain" /> : <img src={retainedPreview.src} alt={retainedPreview.title} className="size-full object-contain" />}
+                                    {retainedPreview.video ? <video src={retainedPreview.src} muted playsInline preload="metadata" className="size-full object-contain" /> : <img src={retainedPreview.src} alt={retainedPreview.title} className="size-full object-contain" style={retainedPreviewBlurred ? canvasImagePrivacyStyle : undefined} />}
                                 </div>
                             </>
                         ) : null}
@@ -3354,16 +3369,17 @@ function InfiniteCanvasPage() {
                     onUpload={(node) => handleUploadRequest(node.id)}
                     onDownload={downloadNodeImage}
                     onSaveAsset={(node) => void saveNodeAsset(node)}
-                    onMaskEdit={(node) => setMaskEditNodeId(node.id)}
-                    onCrop={(node) => setCropNodeId(node.id)}
-                    onSplit={(node) => setSplitNodeId(node.id)}
-                    onUpscale={(node) => setUpscaleNodeId(node.id)}
-                    onSuperResolve={(node) => setSuperResolveNodeId(node.id)}
-                    onAngle={(node) => setAngleNodeId(node.id)}
+                    onMaskEdit={(node) => openImageEditor(node, setMaskEditNodeId)}
+                    onCrop={(node) => openImageEditor(node, setCropNodeId)}
+                    onSplit={(node) => openImageEditor(node, setSplitNodeId)}
+                    onUpscale={(node) => openImageEditor(node, setUpscaleNodeId)}
+                    onSuperResolve={(node) => openImageEditor(node, setSuperResolveNodeId)}
+                    onAngle={(node) => openImageEditor(node, setAngleNodeId)}
                     onViewImage={handleNodeViewImage}
                     onReversePrompt={createImageReversePromptNodes}
                     onRetry={(node) => void handleRetryNode(node)}
                     onToggleFreeResize={(node) => toggleNodeFreeResize(node.id)}
+                    onTogglePrivacyBlur={(node) => toggleNodePrivacyBlur(node.id)}
                     onDelete={(node) => deleteNodes(new Set([node.id]))}
                     onUngroup={(node) => ungroupSelection(new Set([node.id]))}
                 />
@@ -3443,15 +3459,15 @@ function InfiniteCanvasPage() {
                 <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} />
                 <CanvasPluginManagerModal open={pluginManagerOpen} onClose={() => setPluginManagerOpen(false)} />
 
-                {cropNode?.metadata?.content ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}
+                {cropNode?.metadata?.content && !cropNode.metadata.privacyBlurred ? <CanvasNodeCropDialog dataUrl={cropNode.metadata.content} open={Boolean(cropNode)} onClose={() => setCropNodeId(null)} onConfirm={(crop) => void cropImageNode(cropNode!, crop)} /> : null}
 
-                {maskEditNode?.metadata?.content ? (
+                {maskEditNode?.metadata?.content && !maskEditNode.metadata.privacyBlurred ? (
                     <CanvasNodeMaskEditDialog dataUrl={maskEditNode.metadata.content} open={Boolean(maskEditNode)} onClose={() => setMaskEditNodeId(null)} onConfirm={(payload) => void maskEditImageNode(maskEditNode!, payload)} />
                 ) : null}
 
-                {splitNode?.metadata?.content ? <CanvasNodeSplitDialog dataUrl={splitNode.metadata.content} open={Boolean(splitNode)} onClose={() => setSplitNodeId(null)} onConfirm={(params) => void splitImageNode(splitNode!, params)} /> : null}
+                {splitNode?.metadata?.content && !splitNode.metadata.privacyBlurred ? <CanvasNodeSplitDialog dataUrl={splitNode.metadata.content} open={Boolean(splitNode)} onClose={() => setSplitNodeId(null)} onConfirm={(params) => void splitImageNode(splitNode!, params)} /> : null}
 
-                {upscaleNode?.metadata?.content ? (
+                {upscaleNode?.metadata?.content && !upscaleNode.metadata.privacyBlurred ? (
                     <CanvasNodeUpscaleDialog dataUrl={upscaleNode.metadata.content} open={Boolean(upscaleNode)} onClose={() => setUpscaleNodeId(null)} onConfirm={(params) => void upscaleImageNode(upscaleNode!, params)} />
                 ) : null}
 
@@ -3459,7 +3475,7 @@ function InfiniteCanvasPage() {
                     <div className="py-8 text-center text-base font-medium">{t("canvas.projectPage.notImplemented")}</div>
                 </Modal>
 
-                {angleNode?.metadata?.content ? <CanvasNodeAngleDialog dataUrl={angleNode.metadata.content} open={Boolean(angleNode)} onClose={() => setAngleNodeId(null)} onConfirm={(params) => void generateAngleNode(angleNode!, params)} /> : null}
+                {angleNode?.metadata?.content && !angleNode.metadata.privacyBlurred ? <CanvasNodeAngleDialog dataUrl={angleNode.metadata.content} open={Boolean(angleNode)} onClose={() => setAngleNodeId(null)} onConfirm={(params) => void generateAngleNode(angleNode!, params)} /> : null}
 
                 <Modal
                     title={t("canvas.projectPage.imageDetails")}
@@ -3468,9 +3484,9 @@ function InfiniteCanvasPage() {
                     onCancel={() => setPreviewNodeId(null)}
                     footer={null}
                     width="auto"
-                    styles={{ body: { padding: 0, display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "80vh" } }}
+                    styles={{ body: { padding: 0, display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "80vh", overflow: "hidden" } }}
                 >
-                    {previewContent ? <img src={previewContent} alt={previewNode?.title || t("assets.kinds.image")} style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }} /> : null}
+                    {previewContent ? <img src={previewContent} alt={previewNode?.title || t("assets.kinds.image")} style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain", ...(previewNode?.metadata?.privacyBlurred ? canvasImagePrivacyStyle : {}) }} /> : null}
                 </Modal>
 
                 <Modal

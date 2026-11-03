@@ -18,7 +18,7 @@ Scope: `web/`. Stack: Vite 7, React 19, React Router 7, TypeScript, Ant Design 6
 | [Hooks](hook-guidelines.md) | Shared UI effects and local hooks |
 | [State management](state-management.md) | Zustand, authenticated hydration, server records, media |
 | [API requests](api-guidelines.md) | Provider contracts and cancellation |
-| [Canvas UI](canvas-guidelines.md) | Theme, geometry, node operations |
+| [Canvas UI](canvas-guidelines.md) | Theme, geometry, node operations, per-node image privacy |
 | [Type safety](type-safety.md) | Existing types and external boundaries |
 | [Quality](quality-guidelines.md) | Review and user-requested validation |
 | [Application server contract](../backend/application-server.md) | Same-origin API, revisions, cleanup, deployment |

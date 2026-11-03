@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent } from "react";
 import { Button, Image } from "antd";
 import { FileText, Group, Image as ImageIcon, Music2, Video, X } from "lucide-react";
@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasImagePrivacyStyle, renderCanvasImagePreview } from "@/lib/canvas/canvas-image-privacy";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { NodeGenerationInput } from "./canvas-node-generation";
 import { CanvasNodeReferenceBar } from "./canvas-node-reference-bar";
@@ -40,9 +41,11 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
     const composingRef = useRef(false);
     const [mention, setMention] = useState<MentionState | null>(null);
     const [activeIndex, setActiveIndex] = useState(0);
-    const [imagePreview, setImagePreview] = useState<string | null>(null);
+    const [imagePreviewNodeId, setImagePreviewNodeId] = useState<string | null>(null);
     const tokens = useMemo(() => parseComposerTokens(value), [value]);
     const referenceById = useMemo(() => new Map(inputs.map((input) => [input.nodeId, input])), [inputs]);
+    const previewInput = imagePreviewNodeId ? referenceById.get(imagePreviewNodeId) : null;
+    const imagePreview = previewInput?.type === "image" ? previewInput : null;
     const candidates = useMemo(() => {
         if (!mention) return [];
         const query = (mention.query || "").trim().toLowerCase();
@@ -61,9 +64,16 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
                 return;
             }
             const input = referenceById.get(token.nodeId);
-            if (input) editor.append(createReferenceChip(input, inputs, theme, setImagePreview));
+            if (input) editor.append(createReferenceChip(input, inputs, theme, setImagePreviewNodeId));
         });
     }, [inputs, referenceById, theme, tokens]);
+
+    useLayoutEffect(() => {
+        editorRef.current?.querySelectorAll<HTMLImageElement>("[data-reference-node-id] img").forEach((image) => {
+            const input = referenceById.get(image.parentElement?.dataset.referenceNodeId || "");
+            image.style.filter = input?.type === "image" && input.privacyBlurred ? canvasImagePrivacyStyle.filter || "" : "";
+        });
+    }, [referenceById]);
 
     const syncFromEditor = () => {
         const editor = editorRef.current;
@@ -93,7 +103,7 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
         const editor = editorRef.current;
         if (!editor) return;
         removeActiveMention();
-        const chip = createReferenceChip(input, inputs, theme, setImagePreview);
+        const chip = createReferenceChip(input, inputs, theme, setImagePreviewNodeId);
         const space = document.createTextNode(" ");
         const selection = window.getSelection();
         const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
@@ -184,7 +194,7 @@ export function CanvasConfigComposer({ nodeId, nodes, value, inputs, connectedNo
                 />
                 {mention && candidates.length ? <MentionMenu inputs={candidates} allInputs={inputs} activeIndex={Math.min(activeIndex, candidates.length - 1)} theme={theme} onSelect={insertReference} /> : null}
             </div>
-            {imagePreview ? <Image src={imagePreview} alt={t("canvas.composer.imagePreview")} style={{ display: "none" }} preview={{ visible: true, src: imagePreview, onVisibleChange: (visible) => !visible && setImagePreview(null) }} /> : null}
+            {imagePreview?.image ? <Image src={imagePreview.image.dataUrl} alt={t("canvas.composer.imagePreview")} style={{ display: "none" }} preview={{ open: true, src: imagePreview.image.dataUrl, onOpenChange: (open) => !open && setImagePreviewNodeId(null), imageRender: (image) => renderCanvasImagePreview(image, imagePreview.privacyBlurred) }} /> : null}
         </div>
     );
 
@@ -232,7 +242,7 @@ function MentionMenu({ inputs, allInputs, activeIndex, theme, onSelect }: { inpu
 
 function ResourcePreview({ input }: { input: NodeGenerationInput }) {
     if (input.type === "group") return <span className="grid size-9 shrink-0 place-items-center"><Group className="size-4" /></span>;
-    if (input.type === "image" && input.image) return <img src={input.image.dataUrl} alt="" className="size-9 rounded-md object-cover" />;
+    if (input.type === "image" && input.image) return <span className="size-9 shrink-0 overflow-hidden rounded-md"><img src={input.image.dataUrl} alt="" className="size-full object-cover" style={input.privacyBlurred ? canvasImagePrivacyStyle : undefined} /></span>;
     if (input.type === "video" && input.video) return <video src={input.video.url} className="size-9 rounded-md bg-black object-cover" muted preload="metadata" />;
     const Icon = input.type === "audio" ? Music2 : input.type === "video" ? Video : input.type === "image" ? ImageIcon : FileText;
     return (
@@ -242,7 +252,7 @@ function ResourcePreview({ input }: { input: NodeGenerationInput }) {
     );
 }
 
-function createReferenceChip(input: NodeGenerationInput, inputs: NodeGenerationInput[], theme: (typeof canvasThemes)[keyof typeof canvasThemes], onImagePreview: (url: string) => void) {
+function createReferenceChip(input: NodeGenerationInput, inputs: NodeGenerationInput[], theme: (typeof canvasThemes)[keyof typeof canvasThemes], onImagePreview: (nodeId: string) => void) {
     const wrapper = document.createElement("span");
     wrapper.contentEditable = "false";
     wrapper.dataset.referenceNodeId = input.nodeId;
@@ -253,12 +263,13 @@ function createReferenceChip(input: NodeGenerationInput, inputs: NodeGenerationI
         image.src = input.image.dataUrl;
         image.alt = input.title;
         image.className = "size-6 rounded object-cover";
+        image.style.filter = input.privacyBlurred ? canvasImagePrivacyStyle.filter || "" : "";
         wrapper.className = "mx-px inline-flex size-6 items-center justify-center overflow-hidden rounded align-middle";
         wrapper.appendChild(image);
         wrapper.addEventListener("click", (event) => {
             event.preventDefault();
             event.stopPropagation();
-            onImagePreview(input.image?.dataUrl || "");
+            onImagePreview(input.nodeId);
         });
     } else {
         wrapper.title = input.type === "group" ? input.title : input.text || input.title;
