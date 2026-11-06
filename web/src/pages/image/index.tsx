@@ -76,6 +76,8 @@ export default function ImagePage() {
     const { message } = App.useApp();
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
+    const logVersion = useSyncExternalStore(logStore.subscribe, logStore.getSnapshot);
+    const logsRefreshRef = useRef({ id: 0, mounted: false });
     const fileInputRef = useRef<HTMLInputElement>(null);
     const dragDepthRef = useRef(0);
     const config = useConfigStore((state) => state.config);
@@ -117,8 +119,10 @@ export default function ImagePage() {
     }, [running, startedAt]);
 
     useEffect(() => {
+        logsRefreshRef.current.mounted = true;
         void refreshLogs();
-    }, []);
+        return () => { logsRefreshRef.current.mounted = false; logsRefreshRef.current.id += 1; };
+    }, [logVersion]);
 
     const addReferences = async (files?: FileList | null) => {
         const signal = serverSessionSignal();
@@ -325,12 +329,15 @@ export default function ImagePage() {
     };
 
     const refreshLogs = async () => {
+        if (!logsRefreshRef.current.mounted) return;
+        const id = ++logsRefreshRef.current.id;
         const signal = serverSessionSignal();
         try {
-            const items = await readStoredLogs();
+            const items = await readStoredLogs(signal);
             signal.throwIfAborted();
+            if (id !== logsRefreshRef.current.id) return;
             setLogs(items);
-        } catch (error) { reportStorageError(error); }
+        } catch (error) { if (id === logsRefreshRef.current.id) reportStorageError(error); }
     };
 
     const previewGenerationLog = async (log: GenerationLog) => {
@@ -814,29 +821,32 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
     );
 }
 
-async function readStoredLogs() {
+async function readStoredLogs(signal: AbortSignal) {
     if (typeof window === "undefined") return [];
-        const values: GenerationLog[] = [];
-        await logStore.iterate<GenerationLog, void>((value) => {
-            values.push(value);
-        });
-        const logs = await Promise.all(values.map(normalizeLog));
-        return logs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    signal.throwIfAborted();
+    const values: GenerationLog[] = [];
+    await logStore.iterate<GenerationLog, void>((value) => { values.push(value); });
+    signal.throwIfAborted();
+    const logs = await Promise.all(values.map((log) => normalizeLog(log, signal)));
+    signal.throwIfAborted();
+    return logs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
-async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog> {
+async function normalizeLog(log: Partial<GenerationLog>, signal: AbortSignal): Promise<GenerationLog> {
     const references = await Promise.all(
         (log.references || []).map(async (item) => {
             void ensureImagePreview(item.storageKey);
             return { ...item, dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl) };
         }),
     );
+    signal.throwIfAborted();
     const images = await Promise.all(
         (log.images || []).map(async (item) => {
             void ensureImagePreview(item.storageKey);
             return { ...item, dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl) };
         }),
     );
+    signal.throwIfAborted();
     const config = normalizeLogConfig(log);
     return {
         id: log.id || nanoid(),

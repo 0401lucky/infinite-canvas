@@ -75,6 +75,8 @@ export default function VideoPage() {
     const { message } = App.useApp();
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
+    const logVersion = useSyncExternalStore(logStore.subscribe, logStore.getSnapshot);
+    const logsRefreshRef = useRef({ id: 0, mounted: false });
     const fileInputRef = useRef<HTMLInputElement>(null);
     const dragDepthRef = useRef(0);
     const activeLogIdsRef = useRef<Set<string>>(new Set());
@@ -116,8 +118,10 @@ export default function VideoPage() {
     }, [running, startedAt]);
 
     useEffect(() => {
+        logsRefreshRef.current.mounted = true;
         void refreshLogs().catch(reportStorageError);
-    }, []);
+        return () => { logsRefreshRef.current.mounted = false; logsRefreshRef.current.id += 1; };
+    }, [logVersion]);
 
     const addReferences = async (files?: FileList | null) => {
         const signal = serverSessionSignal();
@@ -199,7 +203,10 @@ export default function VideoPage() {
             const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references, { signal });
             signal.throwIfAborted();
             const log = buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, durationMs: 0, status: "pending", task });
-            await saveLog(log, false);
+            // Reserve polling ownership while sync-driven history refreshes can run.
+            activeLogIdsRef.current.add(log.id);
+            try { await saveLog(log, false); }
+            finally { activeLogIdsRef.current.delete(log.id); }
             signal.throwIfAborted();
             void pollGenerationLog(log, snapshot.config, agentTaskId);
         } catch (error) {
@@ -323,12 +330,17 @@ export default function VideoPage() {
     };
 
     const refreshLogs = async (resumePending = true) => {
+        if (!logsRefreshRef.current.mounted) return;
+        const id = ++logsRefreshRef.current.id;
         const signal = serverSessionSignal();
-        const nextLogs = await readStoredLogs();
-        signal.throwIfAborted();
-        setLogs(nextLogs);
-        if (resumePending) resumePendingLogs(nextLogs);
-        return nextLogs;
+        try {
+            const nextLogs = await readStoredLogs(signal);
+            signal.throwIfAborted();
+            if (id !== logsRefreshRef.current.id) return;
+            setLogs(nextLogs);
+            if (resumePending) resumePendingLogs(nextLogs);
+            return nextLogs;
+        } catch (error) { if (id === logsRefreshRef.current.id) throw error; }
     };
 
     const resumePendingLogs = (items: GenerationLog[]) => {
@@ -693,23 +705,27 @@ function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: Ge
     );
 }
 
-async function readStoredLogs() {
+async function readStoredLogs(signal: AbortSignal) {
     if (typeof window === "undefined") return [];
-        const logs: GenerationLog[] = [];
-        await logStore.iterate<GenerationLog, void>((value) => {
-            logs.push(value);
-        });
-        return (await Promise.all(logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    signal.throwIfAborted();
+    const logs: GenerationLog[] = [];
+    await logStore.iterate<GenerationLog, void>((value) => { logs.push(value); });
+    signal.throwIfAborted();
+    const restored = await Promise.all(logs.map((log) => normalizeLog(log, signal)));
+    signal.throwIfAborted();
+    return restored.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
-async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog> {
+async function normalizeLog(log: Partial<GenerationLog>, signal: AbortSignal): Promise<GenerationLog> {
     const video = log.video?.storageKey ? { ...log.video, url: await resolveMediaUrl(log.video.storageKey, log.video.url) } : log.video;
+    signal.throwIfAborted();
     const references = await Promise.all(
         (log.references || []).map(async (item) => {
             void ensureImagePreview(item.storageKey);
             return { ...item, dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl) };
         }),
     );
+    signal.throwIfAborted();
     const config = normalizeLogConfig(log);
     return {
         id: log.id || nanoid(),

@@ -174,6 +174,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     };
 
     const syncWebdav = async () => {
+        const signal = serverSessionSignal();
         if (!webdavReady) {
             message.error(t("config.webdav.missingUrl"));
             return;
@@ -181,15 +182,20 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         setSyncingWebdav(true);
         setWebdavDomainProgress(createWebdavDomainProgress());
         setWebdavSyncStatus(t("config.webdav.preparing"));
+        let receivingProgress = true;
         try {
-            const result = await syncAppDataToWebdav(webdav, updateWebdavProgress);
+            const result = await syncAppDataToWebdav(webdav, (event) => { if (receivingProgress && !signal.aborted) updateWebdavProgress(event); });
+            signal.throwIfAborted();
             updateWebdavConfig("lastSyncedAt", result.syncedAt);
             await flushAppStorage();
+            signal.throwIfAborted();
             message.success(t("config.webdav.completed", { projects: result.projects, assets: result.assets, records: result.imageLogs + result.videoLogs, files: result.uploadedFiles, bytes: formatBytes(result.uploadedBytes) }));
         } catch (error) {
+            if (signal.aborted) return;
             setWebdavSyncStatus(error instanceof Error ? error.message : t("config.webdav.failed"));
             message.error(error instanceof Error ? error.message : t("config.webdav.failed"));
         } finally {
+            receivingProgress = false;
             setSyncingWebdav(false);
         }
     };

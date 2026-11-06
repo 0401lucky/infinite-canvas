@@ -63,7 +63,7 @@ media(key PRIMARY KEY, kind, path, preview_path, mime_type, bytes,
 
 `storage.saveRecord(namespace, key, value, expected, deleted?)` and `storage.replaceRecords(namespace, items, expected)` are SQLite transactions. Deletion keeps record revisions; replacement has no observable empty intermediate collection.
 
-`web/src/lib/server-storage.ts` exports `serverStateStorage` and `createServerRecordStorage(namespace)` with `getItem`, `setItem`, `removeItem`, `iterate`, `snapshot()`, and `replace(items, revision)`. `use-user-store.ts` owns restore/login/logout/load/cleanup/flush; `server.ts` owns session signal/epoch and media metadata caches.
+`web/src/lib/server-storage.ts` exports `serverStateStorage` and `createServerRecordStorage(namespace)` with `getItem`, `setItem`, `removeItem`, `iterate`, `snapshot()`, `replace(items, revision)`, `subscribe(listener: () => void): () => void`, and `getSnapshot(): number`. The last two are successful collection-replacement invalidation, not server revisions. `use-user-store.ts` owns restore/login/logout/load/cleanup/flush; `server.ts` owns session signal/epoch and media metadata caches.
 
 ## 3. Contracts
 
@@ -87,6 +87,10 @@ type ServerStorageUsage = {
 ```
 
 Namespaces: `app_state`, `image_generation_logs`, `video_generation_logs`, `prompt_cache`, or nonempty `plugin:<id>`. Keys are nonempty; media keys match `^(image|video|audio|file|video-reference|audio-reference):[\w-]+$`. Media paths use server-generated UUIDs, never request keys. `If-Match` is a nonnegative integer, with 0 for a never-created record/media. Collection `If-Match` belongs to the exact snapshot being replaced.
+
+The browser adapter groups tasks by exact namespace/key. A collection operation is registered immediately under the reserved empty key, waits for earlier namespace tasks, and holds later record tasks until its response/cache update finishes. Other record keys remain parallel when there is no barrier. Merely awaiting current writes before issuing an unqueued collection read/replace is insufficient: subsequent page writes can still race and regress cached revisions. Session epoch changes detach old queues, and old completions/cleanup cannot touch current queues or publish invalidations.
+
+WebDAV applies current canvas/assets only after original-session media hydration, returns that actual merged data for uploading, and deduplicates shared missing-media downloads within the run. It never calls whole-page `reloadData()` on completion. History collection replacement keeps its original snapshot revision and refreshes mounted workbenches locally; a genuine concurrent change still rejects the replacement. The existing four-domain operation is not an overall transaction or real-time multi-page collaboration.
 
 Session cookies are opaque random tokens, HttpOnly, SameSite=Strict, path `/api`, Secure when configured origin is HTTPS. SQLite stores SHA-256 token digests and fixed expiry; passwords use Argon2id. Every write requires the exact configured Origin; no wildcard CORS or blindly trusted forwarding headers. Auth happens before private body parsing/file reads, and uploads/parsed JSON writes revalidate the session before commit.
 
@@ -143,7 +147,7 @@ SQLite API/WebDAV credentials are not encrypted by the administrator password ha
 | Username duplicates administrator or another member | 409 `USERNAME_TAKEN` | No account created |
 | Write Origin mismatch | 403 `INVALID_ORIGIN` | Reject write, including login/logout |
 | Unknown API or absent original/preview | 404 `NOT_FOUND` / `MEDIA_NOT_FOUND` | No stale URL fallback |
-| Revision differs from original snapshot | 409 `STORAGE_CONFLICT` | Preserve authority; user reload required |
+| Revision differs from original snapshot | 409 `STORAGE_CONFLICT` | Preserve server authority and unsaved page state; source-neutral notice, no automatic reload or stale overwrite; explicit discard/reload remains a user choice |
 | Clearing/cleared media read or overwrite | 410 `MEDIA_CLEARED` | Never revive old key or URL |
 | File >512 MiB or JSON >32 MiB by approved defaults | 413 `REQUEST_TOO_LARGE` | No truncated overwrite or incomplete saved upload |
 | Invalid byte Range | 416 `INVALID_RANGE` | Preserve Express range headers |
@@ -162,6 +166,8 @@ Client `ServerApiError` preserves status/code/message; unreachable/malformed ser
 - Good cleanup/import: clear referenced images, retain cleared JSON and non-images, then explicitly import a pre-cleanup ZIP; new keys restore the imported originals without overwriting tombstones.
 - Bad: an old session finishes source/plugin/media work after a new login, fetches the new session signal, and writes old data or activates old plugins.
 - Bad conflict: read history at revision R, fetch a newer revision R+1, then replace with the stale history using R+1.
+- Good same-page concurrency: register collection barriers before waiting, remember response revisions before later writes, and refresh imported history without resetting prompts or active generation.
+- Bad sync completion: apply an old canvas/assets snapshot after downloads or reload every store/page to refresh histories, losing intervening edits and workbench state.
 - Bad backup: missing original becomes a URL fallback or a silently incomplete successful ZIP; storage failure becomes successful browser-local persistence.
 - Good publication: an authorized `main` push publishes both architectures to the current repository's package; a later tooling-only journal commit does not build again.
 - Bad publication: a fork keeps the upstream `IMAGE_NAME`, or treats a successful container build as proof that authenticated runtime and volume persistence passed.
@@ -172,7 +178,7 @@ These are assertion points for user-authorized validation, not checks already ru
 
 1. Auth/origin: all private records and original/preview paths return 401 before resource probing; wrong credentials create no session; invalid write Origin is 403; logout/expiry/reconfigured credentials revoke access and fixed expiry does not slide.
 2. Hydration/cancellation: no private reads/effects before login; a failed load never opens editable empty state; logout during source fetch, plugin import/discovery, upload, polling, or queued replacement causes no subsequent old-session write/cache/activation. Old refresh `finally` cannot delete a new promise.
-3. Persistence/CAS: reads supply revisions; stale record and collection writes return 409 without changing data; deleted revisions remain; replacement is transactional. Network/disk/413 failure never reports successful persistence or falls back to browser business storage.
+3. Persistence/CAS: reads supply revisions; stale record and collection writes return 409 without changing data; deleted revisions remain; replacement is transactional. Interleave collection reads/replacements and record writes in one page to verify barriers, no revision regression, parallel unrelated keys, failed-write visibility, and independent new-session queues. Network/disk/413 failure never reports successful persistence or falls back to browser business storage.
 4. Media: blank saved URLs restore by key; downloads/edits/references/ZIP/WebDAV use the original, not preview; video/audio playback and Range/416 work after refresh; download/decode/storage failure is visible and leaves no incomplete saved resource.
 5. Cleanup: referenced originals/previews and orphaned managed image files are removed; account/config/text/video/audio/Agent history survive; forced partial deletion fails visibly and leftover bytes remain counted. Old writes/uploads/WebDAV cannot revive tombstones.
 6. ZIP: cleared state exports without files or old URLs; missing non-cleared originals fail export; missing declared files fail import; explicit originals receive new keys and nested/cover/reference remapping, including repeated keys and cleared-only packages.
@@ -180,7 +186,13 @@ These are assertion points for user-authorized validation, not checks already ru
 8. Image publication: the run's `headSha` matches the pushed commit, both architecture jobs and merge succeed, and `latest`/`main`/short-SHA resolve to the same combined digest containing linux/amd64 and linux/arm64. Version-tag/manual behavior and tooling-only skip remain assertion points; do not create a release tag just to test them. Build success does not replace item 7.
 9. Multiple accounts: member creation/reset/disable, shared API allowlist and refresh, independent preferences/default models, identical keys in separate records/media stores, member-only cleanup/usage/ZIP/WebDAV, and stale-tab writes/logout after another account signs in. Keep existing administrator records and media intact through deployment and image rollback.
 
+`web/tests/server-storage.test.ts` adds 8 controlled-request cases; `web/tests/app-sync.test.ts` adds 4 mocked-sync cases for edits/deletions during downloads, shared media, blank-key restoration/covers, original snapshot conflicts, and cancellation. They have not been run. Manual workbench-input preservation, late-history completion and active-video deduplication remain required assertion points.
+
 ## 7. Wrong vs Correct
+
+Wrong inside the browser adapter: `await waitWrites()` and then start a collection request/queue. Later record tasks can enter during that await/request.
+
+Correct: register the empty-key collection barrier synchronously at invocation, capture predecessor tasks then, and remember revisions within that barrier before releasing later tasks. Its page-local `getSnapshot()` counter must never be supplied as an `If-Match` value.
 
 Wrong in this fork:
 

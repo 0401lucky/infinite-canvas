@@ -1,7 +1,7 @@
 import { defaultConfig, resolveModelForCapability, type AiConfig } from "@/stores/use-config-store";
 import i18n from "@/i18n";
 import { ensureImagePreview, resolveImageUrl } from "@/services/image-storage";
-import { imageWasCleared } from "@/services/api/server";
+import { imageWasCleared, serverSessionSignal } from "@/services/api/server";
 import { resolveMediaUrl } from "@/services/file-storage";
 import { referenceUrl } from "@/lib/canvas/canvas-node-factory";
 import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
@@ -44,21 +44,32 @@ export async function resolveMetadataReferences(metadata: CanvasNodeMetadata) {
 }
 
 export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
+    const signal = serverSessionSignal();
+    signal.throwIfAborted();
     return Promise.all(
         nodes.map(async (node) => {
             const metadata = node.metadata;
             const content = metadata?.content;
-            if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && metadata?.storageKey) return { ...node, metadata: { ...metadata, content: await resolveMediaUrl(metadata.storageKey, content) } };
+            if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && metadata?.storageKey) {
+                const url = await resolveMediaUrl(metadata.storageKey, content);
+                signal.throwIfAborted();
+                return { ...node, metadata: { ...metadata, content: url } };
+            }
             if (node.type !== CanvasNodeType.Image || !metadata) return node;
             const images = await Promise.all(
                 (metadata.images || []).map(async (image) => {
                     void ensureImagePreview(image.storageKey);
-                    return { ...image, content: await resolveImageUrl(image.storageKey, image.content), cleared: imageWasCleared(image.storageKey) || image.cleared };
+                    const content = await resolveImageUrl(image.storageKey, image.content);
+                    signal.throwIfAborted();
+                    return { ...image, content, cleared: imageWasCleared(image.storageKey) || image.cleared };
                 }),
             );
+            signal.throwIfAborted();
             if (metadata.storageKey) {
                 void ensureImagePreview(metadata.storageKey);
-                return { ...node, metadata: { ...metadata, content: await resolveImageUrl(metadata.storageKey, content), cleared: imageWasCleared(metadata.storageKey) || metadata.cleared, images } };
+                const url = await resolveImageUrl(metadata.storageKey, content);
+                signal.throwIfAborted();
+                return { ...node, metadata: { ...metadata, content: url, cleared: imageWasCleared(metadata.storageKey) || metadata.cleared, images } };
             }
             return { ...node, metadata: { ...metadata, images } };
         }),
@@ -66,8 +77,14 @@ export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
 }
 
 export async function hydrateAssistantImages(sessions: CanvasAssistantSession[]) {
+    const signal = serverSessionSignal();
+    signal.throwIfAborted();
     const hydrateItem = async <T extends { dataUrl?: string; storageKey?: string; cleared?: boolean }>(item: T) => {
-        if (item.storageKey) return { ...item, dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl), cleared: imageWasCleared(item.storageKey) || item.cleared };
+        if (item.storageKey) {
+            const dataUrl = await resolveImageUrl(item.storageKey, item.dataUrl);
+            signal.throwIfAborted();
+            return { ...item, dataUrl, cleared: imageWasCleared(item.storageKey) || item.cleared };
+        }
         return item;
     };
     return Promise.all(

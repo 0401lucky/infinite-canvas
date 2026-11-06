@@ -35,7 +35,7 @@ export default {
             INVALID_CREDENTIALS: "用户名或密码错误。",
             INVALID_ORIGIN: "请求来源与应用服务配置不一致。",
             INVALID_REQUEST: "请求参数无效。",
-            STORAGE_CONFLICT: "数据已在其他页面更新，请重新加载后再保存。",
+            STORAGE_CONFLICT: "保存版本发生冲突，本次修改未保存。请先保留当前内容，再决定是否重新加载。",
             MEDIA_CLEARED: "图片已清理，请重新上传。",
             MEDIA_NOT_FOUND: "媒体文件不存在。",
             REQUEST_TOO_LARGE: "请求超过部署配置的大小限制，数据未保存。",

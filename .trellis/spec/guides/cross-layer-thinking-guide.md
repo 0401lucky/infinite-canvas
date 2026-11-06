@@ -10,6 +10,8 @@
 
 For application storage, trace UI -> `server.ts`/`server-storage.ts` -> authenticated route -> SQLite/private file, then hydration back to UI. Check original-session cancellation across every await, snapshot revision ownership, original-versus-preview use, cleared-image state, and explicit ZIP key remapping. Concrete signatures/errors live in [application server](../backend/application-server.md), not in this thinking guide.
 
+For same-page races, ask whether collection operations are registered before waiting and whether an older response can undo a newer cached revision. For sync completion, check that media is hydrated before merging current edits and that refreshing history does not reset page inputs or active generation. Local invalidation counters are not CAS revisions; see the application-server and frontend state-management contracts.
+
 ## Agent Conversations
 
 Changes must preserve `threadId`, `turnId`, and `itemId` ownership. Materialized turn snapshots are authoritative; do not merge the same message again from live events. Display metadata additionally binds exact `clientMessageId` to thread/turn in `canvas-agent/src/agent/message-metadata.ts`.

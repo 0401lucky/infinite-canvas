@@ -35,7 +35,7 @@ export default {
             INVALID_CREDENTIALS: "Incorrect username or password.",
             INVALID_ORIGIN: "The request origin does not match the application configuration.",
             INVALID_REQUEST: "Invalid request parameters.",
-            STORAGE_CONFLICT: "Data changed in another page. Reload before saving.",
+            STORAGE_CONFLICT: "A storage version conflict prevented this change from being saved. Preserve your current content before deciding whether to reload.",
             MEDIA_CLEARED: "This image was cleared. Upload it again.",
             MEDIA_NOT_FOUND: "The media file does not exist.",
             REQUEST_TOO_LARGE: "The request exceeds the configured size limit. Data was not saved.",

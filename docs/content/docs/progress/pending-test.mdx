@@ -5,6 +5,16 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+## Saving And WebDAV Synchronization
+
+Implemented, awaiting manual acceptance; the user has authorized committing this fix and pushing it to main. Only source/spec/diff review is performed; no local syntax/type checks, lint, tests, builds, browser validation, or server deployment are run. Added 8 controlled-request cases in `web/tests/server-storage.test.ts` and 4 sync cases in `web/tests/app-sync.test.ts`; these cases have not been executed.
+
+- Single-page saving: continuously edit configuration, canvas projects, assets and workbench history while history is being read. An older collection response must not roll the saved revision back or make subsequent saves continually fail. Collection reads/replacements wait for related writes, while unrelated record keys and namespaces remain parallel. After successful saving, reload and confirm the latest data remains.
+- Concurrent WebDAV use: edit/create projects and assets, delete a canvas or finish generation during media downloads. Apply the latest page state rather than an earlier snapshot; imported history refreshes in place without clearing prompts, references, results, or remounting the workbench. Late history responses must not overwrite the new list, and existing video tasks must not restart as duplicate tasks. A shared missing media key downloads/saves once per sync.
+- In-place media restoration: imported canvas images, assistant references and asset custom covers restore by storage key even when saved URLs are blank. Video/audio playback and original-file usage remain unchanged. Cleared image keys and old URLs must not revive, including when a remote backup still contains their files.
+- Genuine conflicts and failure: two pages editing the same data, or a history changing during WebDAV sync, still reject an outdated snapshot. The neutral version-conflict notice says the change is not saved, without asserting somebody used another page. Keep the current page state and error; do not auto-reload or fetch a fresh revision to overwrite stale data. Manual reload still discards unsaved changes only after its explicit confirmation.
+- Cancellation and scope: log out or switch accounts during reads, replacement, hydration or downloads; old work must not update new-session queues/caches, write a sync timestamp, or report success. A failed domain may leave already-successful domains synchronized; there is no whole-sync rollback or automatic retry. Existing timeout/concurrency/retry values remain unchanged, and previously lost data recovery is not guaranteed.
+
 ## Agnes Multiple API Keys
 
 - Bulk addition: open Add in bulk in the Agnes key list and paste one key per line. Check LF/CRLF, surrounding whitespace, repeated/new/existing keys, and all-duplicate or blank input. The displayed count should include only new keys; confirmation appends in input order and keeps existing key IDs. Canceling, closing the provider, or switching providers clears the pasted text. Save the provider to persist additions and share them with members; browser interaction remains pending manual acceptance.

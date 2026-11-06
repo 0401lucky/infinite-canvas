@@ -81,7 +81,7 @@ function openStorage(dataDir: string) {
     }
 
     function requireRevision(actual: number, expected: number) {
-        if (actual !== expected) throw new ApiError(409, "STORAGE_CONFLICT", "数据已在其他页面更新，请重新加载后再保存");
+        if (actual !== expected) throw new ApiError(409, "STORAGE_CONFLICT", "保存版本发生冲突，本次修改未保存。请先保留当前内容，再决定是否重新加载");
     }
 
     function readRecord(namespace: string, key: string) {

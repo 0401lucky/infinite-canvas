@@ -4,14 +4,26 @@ import { canWriteServerStorage, readServerRecord, readServerRecords, replaceServ
 import { acknowledgeStorageWrite, reportStorageError, useStorageStore } from "@/stores/use-storage-store";
 
 const stores = new Map<string, ReturnType<typeof makeStore>>();
-const queues = new Map<string, Promise<unknown>>();
+const queues = new Map<string, Map<string, Promise<unknown>>>();
+let queuesEpoch = serverSessionEpoch();
 
-function enqueue<T>(id: string, write: boolean, operation: () => Promise<T>) {
+function resetQueues() {
     const epoch = serverSessionEpoch();
-    const job = (queues.get(id) || Promise.resolve()).catch(() => undefined).then(async () => {
+    if (queuesEpoch !== epoch) { queues.clear(); queuesEpoch = epoch; }
+    return epoch;
+}
+
+function enqueue<T>(namespace: string, key: string, write: boolean, operation: () => Promise<T>) {
+    const epoch = resetQueues();
+    const queue = queues.get(namespace) || new Map<string, Promise<unknown>>();
+    queues.set(namespace, queue);
+    const id = `${namespace}/${key}`;
+    // The empty key is a collection barrier; unrelated record keys stay parallel.
+    const previous = key ? [queue.get(key), queue.get("")] : [...queue.values()];
+    if (write) useStorageStore.setState((state) => ({ pending: state.pending + 1 }));
+    const job = Promise.all(previous.map((task) => task?.catch(() => undefined))).then(async () => {
         if (epoch !== serverSessionEpoch()) throw new DOMException("Session ended", "AbortError");
         if (write && !canWriteServerStorage()) throw new DOMException("Storage is not ready", "AbortError");
-        if (write) useStorageStore.setState((state) => ({ pending: state.pending + 1 }));
         try {
             const result = await operation();
             if (epoch !== serverSessionEpoch()) throw new DOMException("Session ended", "AbortError");
@@ -20,18 +32,23 @@ function enqueue<T>(id: string, write: boolean, operation: () => Promise<T>) {
         } catch (error) {
             if (epoch === serverSessionEpoch()) reportStorageError(error, write ? id : undefined);
             throw error;
-        } finally {
-            if (write && epoch === serverSessionEpoch()) useStorageStore.setState((state) => ({ pending: state.pending - 1 }));
         }
+    }).finally(() => {
+        if (write && epoch === serverSessionEpoch()) useStorageStore.setState((state) => ({ pending: state.pending - 1 }));
     });
-    queues.set(id, job);
-    const remove = () => { if (queues.get(id) === job) queues.delete(id); };
+    queue.set(key, job);
+    const remove = () => {
+        if (queue.get(key) === job) queue.delete(key);
+        if (!queue.size && queues.get(namespace) === queue) queues.delete(namespace);
+    };
     void job.then(remove, remove);
     return job;
 }
 
 function makeStore(namespace: string) {
     const revisions = new Map<string, number>();
+    const listeners = new Set<() => void>();
+    let collectionVersion = 0;
     let epoch = serverSessionEpoch();
     const reset = () => {
         if (epoch === serverSessionEpoch()) return;
@@ -40,30 +57,28 @@ function makeStore(namespace: string) {
     };
     const remember = (record: ServerRecord) => { revisions.set(record.key, record.revision); return record; };
     const rememberAll = (result: ServerRecords) => { result.records.forEach(remember); return result; };
-    const id = (key: string) => `${namespace}/${key}`;
-    const waitWrites = () => Promise.all([...queues].filter(([key]) => key.startsWith(`${namespace}/`)).map(([, job]) => job));
-    const readAll = async () => {
+    const readAll = () => enqueue(namespace, "", false, async () => {
         const signal = serverSessionSignal();
         reset();
-        await waitWrites();
+        const result = await readServerRecords(namespace);
         signal.throwIfAborted();
-        try {
-            const result = await readServerRecords(namespace);
-            signal.throwIfAborted();
-            return rememberAll(result);
-        }
-        catch (error) { reportStorageError(error); throw error; }
-    };
+        return rememberAll(result);
+    });
     return {
+        subscribe: (listener: () => void) => {
+            listeners.add(listener);
+            return () => { listeners.delete(listener); };
+        },
+        getSnapshot: () => collectionVersion,
         snapshot: readAll,
-        getItem: <T = unknown>(key: string) => enqueue(id(key), false, async () => {
+        getItem: <T = unknown>(key: string) => enqueue(namespace, key, false, async () => {
             const signal = serverSessionSignal();
             reset();
             const record = await readServerRecord(namespace, key);
             signal.throwIfAborted();
             return remember(record).value as T | null;
         }),
-        setItem: <T>(key: string, value: T) => enqueue(id(key), true, async () => {
+        setItem: <T>(key: string, value: T) => enqueue(namespace, key, true, async () => {
             const signal = serverSessionSignal();
             reset();
             if (!revisions.has(key)) {
@@ -75,7 +90,7 @@ function makeStore(namespace: string) {
             signal.throwIfAborted();
             return remember(record).value as T;
         }),
-        removeItem: (key: string) => enqueue(id(key), true, async () => {
+        removeItem: (key: string) => enqueue(namespace, key, true, async () => {
             const signal = serverSessionSignal();
             reset();
             if (!revisions.has(key)) {
@@ -97,18 +112,17 @@ function makeStore(namespace: string) {
             }
             return undefined;
         },
-        replace: async (items: Array<{ key: string; value: unknown }>, revision: number) => {
+        replace: (items: Array<{ key: string; value: unknown }>, revision: number) => enqueue(namespace, "", true, async () => {
             const signal = serverSessionSignal();
             reset();
-            await waitWrites();
+            const result = await replaceServerRecords(namespace, items, revision);
             signal.throwIfAborted();
-            return enqueue(id(""), true, async () => {
-                signal.throwIfAborted();
-                const result = await replaceServerRecords(namespace, items, revision);
-                signal.throwIfAborted();
-                return rememberAll(result);
-            });
-        },
+            rememberAll(result);
+            collectionVersion += 1;
+            // UI listeners must not turn a committed replacement into a failed save.
+            for (const listener of listeners) queueMicrotask(() => { if (listeners.has(listener) && !signal.aborted) listener(); });
+            return result;
+        }),
     };
 }
 
@@ -134,7 +148,11 @@ export const serverStateStorage: StateStorage = {
 };
 
 export async function flushServerWrites() {
-    while (queues.size) await Promise.all([...queues.values()]);
+    const epoch = resetQueues();
+    while (queues.size) {
+        await Promise.all([...queues.values()].flatMap((queue) => [...queue.values()]));
+        if (epoch !== serverSessionEpoch()) throw new DOMException("Session ended", "AbortError");
+    }
     const failed = Object.values(useStorageStore.getState().failedWrites)[0];
     if (failed) throw new Error(failed);
 }

@@ -30,7 +30,7 @@ async function removeFile(storage: UserStorage, path: string) {
 function requireWritable(storage: UserStorage, key: string, expected: number) {
     const row = storage.mediaRow(key);
     if (row && row.status !== "active") throw new ApiError(410, "MEDIA_CLEARED", "图片已清理，请重新上传");
-    if ((row?.revision ?? 0) !== expected) throw new ApiError(409, "STORAGE_CONFLICT", "媒体已更新，请重新加载");
+    if ((row?.revision ?? 0) !== expected) throw new ApiError(409, "STORAGE_CONFLICT", "媒体保存版本发生冲突，本次修改未保存。请先保留当前内容，再决定是否重新加载");
     return row;
 }
 

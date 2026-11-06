@@ -234,3 +234,23 @@ User explicitly authorized adapting and pushing the application image workflow. 
 ### Next Steps
 
 - 用户手工确认单图和图片组切换、刷新保留、所有预览与原文件边界。
+
+
+## Session 8: 修复单页面存储冲突与 WebDAV 同步保数
+<!-- trellis-session: v=2 fp=4e38115160cf8c14 -->
+
+**Date**: 2026-11-06
+**Task**: 修复单页面存储冲突与 WebDAV 同步保数
+**Branch**: `main`
+
+### Summary
+
+修复集合读写屏障、排队写入的待保存状态、同步期间的最新状态合并与同键媒体去重；取消同步整页重载，历史就地刷新并保留视频轮询归属，补齐原会话保护和中性冲突文案。新增 8 项队列与 4 项同步回归代码，未执行语法/类型检查、lint、测试、构建或浏览器验收，未提交或部署。已更新中英文待测试、Unreleased 和相关规范，核对 TODO 无需修改；任务已归档到 .trellis/tasks/archive/2026-11/11-05-storage-conflict-data-loss，使用 --no-commit 保留 Git 历史及原有六个研究文件。
+
+### Git Commits
+
+(No commits - planning session)
+
+### Status
+
+[OK] **Completed**
